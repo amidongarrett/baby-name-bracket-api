@@ -1,6 +1,6 @@
 const Bracket = require('../models/Bracket');
 const { v4: uuidv4 } = require('uuid');
-const { generateRoundOf32Matchups, validateBracketForSeeding } = require('../utils/seedingAlgorithm');
+const { generateDivisionMatchups } = require('../utils/seedingAlgorithm');
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
 
 /**
@@ -386,6 +386,9 @@ const getCurrentBracket = async (req, res) => {
         name: bracket.findNameById(bracket.championNameId)
       } : null,
       
+      // Admin-published rounds (guests see winner highlights only for these)
+      publishedRounds: bracket.publishedRounds || [],
+
       // Timestamps
       createdAt: bracket.createdAt,
       updatedAt: bracket.updatedAt
@@ -759,26 +762,8 @@ const lockBracket = async (req, res) => {
       });
     }
 
-    // Validate previewMatchups exist
-    if (!bracket.previewMatchups || bracket.previewMatchups.length === 0) {
-      // Generate preview matchups if they don't exist yet
-      const allNames = bracket.getAllNames();
-      bracket.previewMatchups = generateRoundOf32Matchups(allNames);
-    }
-
-    // Copy previewMatchups to permanent matchups.roundOf32
-    bracket.matchups.roundOf32 = bracket.previewMatchups.map(matchup => ({
-      id: matchup.id,
-      round: matchup.round,
-      name1Id: matchup.name1Id,
-      name2Id: matchup.name2Id,
-      votes: {
-        name1Votes: 0,
-        name2Votes: 0
-      },
-      winnerId: null,
-      createdAt: matchup.createdAt || new Date()
-    }));
+    // Generate division matchups directly and write to permanent roundOf32
+    bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
 
     // Change status to 'active' and set current round
     bracket.status = 'active';
@@ -827,10 +812,23 @@ const lockBracket = async (req, res) => {
  * - Increments the appropriate vote counter (name1Votes or name2Votes)
  * - Stores complete vote metadata for audit trail
  */
+// If both owners have now voted on this matchup, auto-set winnerId when they agree
+// or clear it when they conflict. No-op for guest votes (role is null).
+function resolveOwnerWinner(bracket, matchup, role) {
+  if (role !== 'Owner 1' && role !== 'Owner 2') return;
+  const o1Vote = bracket.votes.find(v => v.matchupId === matchup.id && v.role === 'Owner 1');
+  const o2Vote = bracket.votes.find(v => v.matchupId === matchup.id && v.role === 'Owner 2');
+  if (o1Vote && o2Vote) {
+    matchup.winnerId = (o1Vote.selectedNameId === o2Vote.selectedNameId)
+      ? o1Vote.selectedNameId
+      : null;
+  }
+}
+
 const castVote = async (req, res) => {
   try {
     const { matchupId } = req.params;
-    const { voterId, selectedNameId } = req.body;
+    const { voterId, selectedNameId, role = null } = req.body;
 
     // Validation
     if (!matchupId || typeof matchupId !== 'string') {
@@ -894,30 +892,79 @@ const castVote = async (req, res) => {
       });
     }
 
-    // Check for duplicate vote: ensure voterId hasn't already voted on this matchupId
-    const existingVote = bracket.votes.find(
-      v => v.matchupId === matchupId && v.voterId === voterId
-    );
+    // Check for duplicate vote: owners deduplicate by role (so both can vote independently
+    // even on the same device); guests deduplicate by voterId.
+    const existingVote = (role === 'Owner 1' || role === 'Owner 2')
+      ? bracket.votes.find(v => v.matchupId === matchup.id && v.role === role)
+      : bracket.votes.find(v => v.matchupId === matchupId && v.voterId === voterId);
 
     if (existingVote) {
-      return res.status(400).json({
-        error: 'Duplicate vote detected. You have already voted on this matchup.',
-        matchupId,
-        voterId,
-        previousVote: {
-          id: existingVote.id,
-          selectedNameId: existingVote.selectedNameId,
-          timestamp: existingVote.createdAt
+      // Get the name details for response (needed in all branches)
+      const selectedName = bracket.findNameById(selectedNameId);
+      const matchupResponse = {
+        id: matchup.id,
+        round: matchup.round,
+        name1Id: matchup.name1Id,
+        name2Id: matchup.name2Id,
+        votes: {
+          name1Votes: matchup.votes.name1Votes,
+          name2Votes: matchup.votes.name2Votes,
+          total: matchup.votes.name1Votes + matchup.votes.name2Votes
         }
+      };
+
+      // No change — same name selected again
+      if (existingVote.selectedNameId === selectedNameId) {
+        return res.status(200).json({
+          message: 'Vote unchanged',
+          vote: existingVote,
+          matchup: matchupResponse,
+          selectedName: selectedName ? { id: selectedName.id, value: selectedName.value } : null
+        });
+      }
+
+      // Different name — decrement old tally, update record, increment new tally
+      if (existingVote.selectedNameId === matchup.name1Id) {
+        matchup.votes.name1Votes = Math.max(0, matchup.votes.name1Votes - 1);
+      } else {
+        matchup.votes.name2Votes = Math.max(0, matchup.votes.name2Votes - 1);
+      }
+
+      existingVote.selectedNameId = selectedNameId;
+      existingVote.role = role;
+      existingVote.createdAt = new Date();
+
+      if (selectedNameId === matchup.name1Id) {
+        matchup.votes.name1Votes += 1;
+      } else {
+        matchup.votes.name2Votes += 1;
+      }
+
+      resolveOwnerWinner(bracket, matchup, role);
+      await bracket.save();
+
+      matchupResponse.votes = {
+        name1Votes: matchup.votes.name1Votes,
+        name2Votes: matchup.votes.name2Votes,
+        total: matchup.votes.name1Votes + matchup.votes.name2Votes
+      };
+
+      return res.status(200).json({
+        message: 'Vote updated successfully',
+        vote: existingVote,
+        matchup: matchupResponse,
+        selectedName: selectedName ? { id: selectedName.id, value: selectedName.value } : null
       });
     }
 
-    // Create vote metadata
+    // Create vote metadata — always key by the matchup's UUID (not the URL param,
+    // which could be a MongoDB ObjectId string) so voteMap lookups are consistent.
     const voteRecord = {
       id: uuidv4(),
-      matchupId,
+      matchupId: matchup.id,
       voterId,
       selectedNameId,
+      role,
       createdAt: new Date()
     };
 
@@ -930,6 +977,8 @@ const castVote = async (req, res) => {
     } else {
       matchup.votes.name2Votes += 1;
     }
+
+    resolveOwnerWinner(bracket, matchup, role);
 
     // Save the updated bracket
     await bracket.save();
@@ -1085,25 +1134,8 @@ const lockInOwner = async (req, res) => {
     // If both owners are locked in and there are exactly 32 names, activate the bracket
     const totalNames = bracket.getTotalNameCount();
     if (bracket.owner1LockedIn && bracket.owner2LockedIn && totalNames === 32) {
-      // Ensure previewMatchups exist; generate them if not
-      if (!bracket.previewMatchups || bracket.previewMatchups.length === 0) {
-        const allNames = bracket.getAllNames();
-        bracket.previewMatchups = generateRoundOf32Matchups(allNames);
-      }
-
-      // Copy previewMatchups → permanent matchups.roundOf32
-      bracket.matchups.roundOf32 = bracket.previewMatchups.map(matchup => ({
-        id: matchup.id,
-        round: matchup.round,
-        name1Id: matchup.name1Id,
-        name2Id: matchup.name2Id,
-        votes: {
-          name1Votes: 0,
-          name2Votes: 0
-        },
-        winnerId: null,
-        createdAt: matchup.createdAt || new Date()
-      }));
+      // Generate division matchups directly and write to permanent roundOf32
+      bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
 
       bracket.status = 'active';
       bracket.currentRound = 'Round of 32';
@@ -1238,27 +1270,192 @@ const resetRound = async (req, res) => {
 const getUserVotes = async (req, res) => {
   try {
     const { voterId } = req.params;
+    if (!voterId) return res.status(400).json({ error: 'voterId is required' });
 
-    if (!voterId || typeof voterId !== 'string' || voterId.trim() === '') {
-      return res.status(400).json({ error: 'Valid voterId is required' });
+    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    if (!bracket) return res.status(200).json({ voterId, votedMatchupIds: [], voteMap: {}, lockedRounds: [] });
+
+    const userVotes = bracket.votes.filter(v => v.voterId === voterId);
+
+    // Map of matchupId → selectedNameId
+    const voteMap = {};
+    userVotes.forEach(v => { voteMap[v.matchupId] = v.selectedNameId; });
+
+    // Rounds this guest has locked in
+    const lockedRounds = bracket.guestLockIns
+      .filter(li => li.voterId === voterId)
+      .map(li => li.round);
+
+    return res.status(200).json({
+      voterId,
+      votedMatchupIds: userVotes.map(v => v.matchupId),
+      voteMap,
+      lockedRounds
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get user votes' });
+  }
+};
+
+// POST /api/bracket/guest-lock-in
+// Body: { voterId, round }
+// Marks the guest as locked in for that round. Cannot lock in twice for the same round.
+const guestLockIn = async (req, res) => {
+  try {
+    const { voterId, round } = req.body;
+    if (!voterId || !round) {
+      return res.status(400).json({ error: 'voterId and round are required' });
     }
 
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } })
-      .sort({ createdAt: -1 });
+    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
 
-    if (!bracket) {
-      return res.status(200).json({ voterId, votedMatchupIds: [] });
+    // Prevent duplicate lock-in for same round
+    const alreadyLocked = bracket.guestLockIns.some(li => li.voterId === voterId && li.round === round);
+    if (alreadyLocked) {
+      const lockedRounds = bracket.guestLockIns.filter(li => li.voterId === voterId).map(li => li.round);
+      return res.status(200).json({ success: true, alreadyLocked: true, lockedRounds });
     }
 
-    const votedMatchupIds = bracket.votes
-      .filter(v => v.voterId === voterId)
-      .map(v => v.matchupId);
+    bracket.guestLockIns.push({ voterId, round, lockedAt: new Date() });
+    await bracket.save();
 
-    return res.status(200).json({ voterId, votedMatchupIds });
+    const lockedRounds = bracket.guestLockIns.filter(li => li.voterId === voterId).map(li => li.round);
+    return res.status(201).json({ success: true, lockedRounds });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to lock in guest picks' });
+  }
+};
 
-  } catch (error) {
-    console.error('Error in getUserVotes controller:', error);
-    return res.status(500).json({ error: 'Internal server error', message: error.message });
+// POST /api/admin/set-winner
+// Body: { matchupId, winnerId }
+const setMatchupWinner = async (req, res) => {
+  try {
+    const { matchupId, winnerId } = req.body;
+    if (!matchupId || !winnerId) {
+      return res.status(400).json({ error: 'matchupId and winnerId are required' });
+    }
+
+    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
+
+    // Search all rounds for this matchup
+    const allRoundKeys = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+    let found = false;
+    for (const roundKey of allRoundKeys) {
+      const matchup = bracket.matchups[roundKey].find(m => m.id === matchupId);
+      if (matchup) {
+        matchup.winnerId = winnerId;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) return res.status(404).json({ error: 'Matchup not found' });
+
+    await bracket.save();
+    return res.status(200).json({ success: true, matchupId, winnerId });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to set matchup winner' });
+  }
+};
+
+// POST /api/admin/publish-round
+// Body: { round }  e.g. 'roundOf32'
+const publishRound = async (req, res) => {
+  try {
+    const { round } = req.body;
+    if (!round) return res.status(400).json({ error: 'round is required' });
+
+    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
+
+    if (!bracket.publishedRounds.includes(round)) {
+      bracket.publishedRounds.push(round);
+    }
+
+    await bracket.save();
+    return res.status(200).json({ success: true, publishedRounds: bracket.publishedRounds });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to publish round' });
+  }
+};
+
+// POST /api/admin/reset-and-regenerate
+// Clears all matchups, votes, guestLockIns, publishedRounds, and championNameId,
+// resets status to 'draft', then immediately regenerates roundOf32 with the current
+// seeding algorithm if 32 names are present. Names are preserved through both steps.
+const resetAndRegenerate = async (req, res) => {
+  try {
+    const bracket = await getOrCreateBracket();
+
+    // 1. Clear everything except names
+    bracket.matchups.roundOf32    = [];
+    bracket.matchups.roundOf16    = [];
+    bracket.matchups.elite8       = [];
+    bracket.matchups.final4       = [];
+    bracket.matchups.championship = [];
+    bracket.votes          = [];
+    bracket.guestLockIns   = [];
+    bracket.publishedRounds = [];
+    bracket.championNameId = null;
+    bracket.status         = 'draft';
+    bracket.currentRound   = 'Round of 32';
+    bracket.owner1LockedIn = false;
+    bracket.owner2LockedIn = false;
+
+    // 2. Validate we have 32 names
+    const totalNames = bracket.getTotalNameCount();
+    if (totalNames !== 32) {
+      await bracket.save();
+      return res.status(400).json({
+        error: `Reset to draft — need 32 names to regenerate. Currently ${totalNames}/32.`,
+        status: bracket.status
+      });
+    }
+
+    // 3. Generate fresh matchups with new seeding algorithm
+    bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
+    bracket.status = 'active';
+    bracket.currentRound = 'Round of 32';
+
+    await bracket.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Bracket reset and regenerated with new seeding. All votes cleared.',
+      status: bracket.status,
+      currentRound: bracket.currentRound,
+    });
+  } catch (err) {
+    console.error('Error in resetAndRegenerate controller:', err);
+    return res.status(500).json({ error: 'Failed to reset and regenerate' });
+  }
+};
+
+/**
+ * GET /api/bracket/owner-picks
+ * Returns per-matchup owner picks across ALL rounds.
+ * Response: { ownerPicks: { [matchupId]: { owner1NameId, owner2NameId } } }
+ */
+const getOwnerPicks = async (req, res) => {
+  try {
+    const bracket = await getOrCreateBracket();
+    const ownerPicks = {};
+
+    bracket.votes
+      .filter(v => v.role === 'Owner 1' || v.role === 'Owner 2')
+      .forEach(v => {
+        if (!ownerPicks[v.matchupId]) {
+          ownerPicks[v.matchupId] = { owner1NameId: null, owner2NameId: null };
+        }
+        if (v.role === 'Owner 1') ownerPicks[v.matchupId].owner1NameId = v.selectedNameId;
+        if (v.role === 'Owner 2') ownerPicks[v.matchupId].owner2NameId = v.selectedNameId;
+      });
+
+    return res.status(200).json({ ownerPicks });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to fetch owner picks' });
   }
 };
 
@@ -1275,5 +1472,10 @@ module.exports = {
   castVote,
   getUserVotes,
   advanceRound,
-  resetRound
+  resetRound,
+  getOwnerPicks,
+  guestLockIn,
+  setMatchupWinner,
+  publishRound,
+  resetAndRegenerate
 };

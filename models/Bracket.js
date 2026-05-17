@@ -53,6 +53,11 @@ const VoteSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  role: {
+    type: String,
+    enum: ['Owner 1', 'Owner 2', null],
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -193,6 +198,19 @@ const BracketSchema = new mongoose.Schema({
     default: []
   },
   
+  // Tracks which guests have locked in their picks per round
+  guestLockIns: [{
+    voterId:  { type: String, required: true },
+    round:    { type: String, required: true },
+    lockedAt: { type: Date, default: Date.now }
+  }],
+
+  // Rounds where admin has published official results to guests
+  publishedRounds: {
+    type: [String],
+    default: []
+  },
+
   // Tournament winner
   championNameId: {
     type: String,

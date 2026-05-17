@@ -18,7 +18,12 @@ const {
   castVote,
   getUserVotes,
   advanceRound,
-  resetRound
+  resetRound,
+  getOwnerPicks,
+  guestLockIn,
+  setMatchupWinner,
+  publishRound,
+  resetAndRegenerate
 } = require('../controllers/bracketController');
 
 /**
@@ -53,6 +58,13 @@ router.post('/names', addName);
  * This is the primary endpoint used by the frontend to display the current bracket state.
  */
 router.get('/bracket/current', getCurrentBracket);
+
+/**
+ * GET /api/bracket/owner-picks
+ * Returns per-matchup owner picks for conflict detection.
+ * Response: { ownerPicks: { [matchupId]: { owner1NameId, owner2NameId } } }
+ */
+router.get('/bracket/owner-picks', getOwnerPicks);
 
 /**
  * GET /api/bracket/preview
@@ -143,6 +155,10 @@ router.post('/bracket/generate', generateBracket);
 router.post('/bracket/reset', resetBracket);
 router.post('/bracket/lock', lockBracket);
 router.post('/bracket/lock-in', lockInOwner);
+router.post('/bracket/guest-lock-in', guestLockIn);
+router.post('/admin/set-winner', setMatchupWinner);
+router.post('/admin/publish-round', publishRound);
+router.post('/admin/reset-and-regenerate', resetAndRegenerate);
 
 /**
  * POST /api/bracket/advance
