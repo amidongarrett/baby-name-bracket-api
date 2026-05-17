@@ -1,151 +1,83 @@
 /**
- * Tournament Seeding Algorithm
- * Implements March Madness-style bracket seeding for 32 names
- * 
- * Seeding Pattern:
- * - Matchup 1: Seed 1 vs Seed 32
- * - Matchup 2: Seed 16 vs Seed 17
- * - Matchup 3: Seed 8 vs Seed 25
- * - Matchup 4: Seed 9 vs Seed 24
- * - Matchup 5: Seed 5 vs Seed 28
- * - Matchup 6: Seed 12 vs Seed 21
- * - Matchup 7: Seed 4 vs Seed 29
- * - Matchup 8: Seed 13 vs Seed 20
- * - Matchup 9: Seed 6 vs Seed 27
- * - Matchup 10: Seed 11 vs Seed 22
- * - Matchup 11: Seed 3 vs Seed 30
- * - Matchup 12: Seed 14 vs Seed 19
- * - Matchup 13: Seed 7 vs Seed 26
- * - Matchup 14: Seed 10 vs Seed 23
- * - Matchup 15: Seed 2 vs Seed 31
- * - Matchup 16: Seed 15 vs Seed 18
+ * Tournament Seeding Algorithm — V2
+ *
+ * Two-division structure, cross-pollinated by rank:
+ *   Division 1 (matchups 0–7):  Owner 1's top 8 vs Owner 2's bottom 8
+ *   Division 2 (matchups 8–15): Owner 2's top 8 vs Owner 1's bottom 8
+ *
+ * Within each division the 8 matchup slots follow March Madness ordering so
+ * the top two seeds in each division can only meet in the division final:
+ *   Slot 0: seed1 vs seed16_equiv
+ *   Slot 1: seed8 vs seed9_equiv
+ *   Slot 2: seed4 vs seed13_equiv
+ *   Slot 3: seed5 vs seed12_equiv
+ *   Slot 4: seed2 vs seed15_equiv
+ *   Slot 5: seed7 vs seed10_equiv
+ *   Slot 6: seed3 vs seed14_equiv
+ *   Slot 7: seed6 vs seed11_equiv
  */
 
 const { v4: uuidv4 } = require('uuid');
 
 /**
- * Traditional March Madness seeding pairs
- * Each pair represents [higherSeed, lowerSeed] for optimal bracket balance
+ * Helper — build a single Round-of-32 matchup object.
+ * @param {Object|null} nameA
+ * @param {Object|null} nameB
  */
-const SEEDING_PAIRS = [
-  [1, 32],   // Matchup 1
-  [16, 17],  // Matchup 2
-  [8, 25],   // Matchup 3
-  [9, 24],   // Matchup 4
-  [5, 28],   // Matchup 5
-  [12, 21],  // Matchup 6
-  [4, 29],   // Matchup 7
-  [13, 20],  // Matchup 8
-  [6, 27],   // Matchup 9
-  [11, 22],  // Matchup 10
-  [3, 30],   // Matchup 11
-  [14, 19],  // Matchup 12
-  [7, 26],   // Matchup 13
-  [10, 23],  // Matchup 14
-  [2, 31],   // Matchup 15
-  [15, 18]   // Matchup 16
-];
+const makeMatchup = (nameA, nameB) => ({
+  id: uuidv4(),
+  round: 'Round of 32',
+  name1Id: nameA?.id || null,
+  name2Id: nameB?.id || null,
+  votes: { name1Votes: 0, name2Votes: 0 },
+  winnerId: null,
+  createdAt: new Date()
+});
 
 /**
- * Generate Round of 32 matchups using March Madness seeding algorithm
+ * Generate Division Matchups
  *
- * @param {Array} names - Array of name objects with id and value properties (can be < 32)
- * @returns {Array} Array of 16 matchup objects for Round of 32
- * @throws {Error} If names array is invalid
+ * Produces 16 Round-of-32 matchups (8 per division) from the two owner name
+ * arrays.  Each array must be ordered by rank (index 0 = rank 1 = top pick).
  *
- * Each matchup object contains:
- * - id: Unique UUID for the matchup
- * - round: "Round of 32"
- * - name1Id: ID of the higher seed or null for placeholder
- * - name2Id: ID of the lower seed or null for placeholder
- * - votes: { name1Votes: 0, name2Votes: 0 }
- * - winnerId: null (no winner yet)
- * - createdAt: timestamp
- *
- * NOTE: If fewer than 32 names are provided, remaining slots will use null IDs
- * with placeholder text like "TBD - Waiting for name submission"
+ * @param {Array} owner1Names - Owner 1's names sorted by rank (16 entries expected)
+ * @param {Array} owner2Names - Owner 2's names sorted by rank (16 entries expected)
+ * @returns {Array} 16 matchup objects: [div1_0..div1_7, div2_0..div2_7]
  */
-const generateRoundOf32Matchups = (names) => {
-  // Validation
-  if (!Array.isArray(names)) {
-    throw new Error('Names must be an array');
+const generateDivisionMatchups = (owner1Names, owner2Names) => {
+  if (!Array.isArray(owner1Names) || !Array.isArray(owner2Names)) {
+    throw new Error('owner1Names and owner2Names must be arrays');
   }
 
-  // Validate each provided name has required properties
-  names.forEach((name, index) => {
-    if (!name.id || !name.value) {
-      throw new Error(`Name at index ${index} is missing required properties (id, value)`);
-    }
-  });
+  const o1 = owner1Names; // alias — index 0 = rank 1 (top pick)
+  const o2 = owner2Names; // alias — index 0 = rank 1 (top pick)
 
-  // Pad names array to 32 with null placeholders
-  const paddedNames = [...names];
-  while (paddedNames.length < 32) {
-    paddedNames.push(null);
-  }
+  // Division 1: Owner 1 top-8 seeds vs Owner 2 bottom-8 seeds
+  // o1[0] = H#1, o2[15] = W#16, etc.
+  const div1 = [
+    makeMatchup(o1[0],  o2[15]),  // H#1  vs W#16
+    makeMatchup(o1[7],  o2[8]),   // H#8  vs W#9
+    makeMatchup(o1[3],  o2[12]),  // H#4  vs W#13
+    makeMatchup(o1[4],  o2[11]),  // H#5  vs W#12
+    makeMatchup(o1[1],  o2[14]),  // H#2  vs W#15
+    makeMatchup(o1[6],  o2[9]),   // H#7  vs W#10
+    makeMatchup(o1[2],  o2[13]),  // H#3  vs W#14
+    makeMatchup(o1[5],  o2[10]),  // H#6  vs W#11
+  ];
 
-  // Generate matchups using seeding pairs
-  const matchups = SEEDING_PAIRS.map(([seed1, seed2], matchupIndex) => {
-    // Convert seed numbers to array indices (seeds are 1-based, arrays are 0-based)
-    const name1 = paddedNames[seed1 - 1];
-    const name2 = paddedNames[seed2 - 1];
+  // Division 2: Owner 2 top-8 seeds vs Owner 1 bottom-8 seeds
+  const div2 = [
+    makeMatchup(o2[0],  o1[15]),  // W#1  vs H#16
+    makeMatchup(o2[7],  o1[8]),   // W#8  vs H#9
+    makeMatchup(o2[3],  o1[12]),  // W#4  vs H#13
+    makeMatchup(o2[4],  o1[11]),  // W#5  vs H#12
+    makeMatchup(o2[1],  o1[14]),  // W#2  vs H#15
+    makeMatchup(o2[6],  o1[9]),   // W#7  vs H#10
+    makeMatchup(o2[2],  o1[13]),  // W#3  vs H#14
+    makeMatchup(o2[5],  o1[10]),  // W#6  vs H#11
+  ];
 
-    return {
-      id: uuidv4(),
-      round: 'Round of 32',
-      name1Id: name1 ? name1.id : null,
-      name2Id: name2 ? name2.id : null,
-      votes: {
-        name1Votes: 0,
-        name2Votes: 0
-      },
-      winnerId: null,
-      createdAt: new Date()
-    };
-  });
-
-  return matchups;
+  return [...div1, ...div2];
 };
 
-/**
- * Validate that all 32 names are ready for tournament generation
- * 
- * @param {Object} bracket - Bracket document from MongoDB
- * @returns {Object} Validation result with isValid boolean and error message if invalid
- */
-const validateBracketForSeeding = (bracket) => {
-  const totalNames = bracket.getTotalNameCount();
-
-  if (totalNames < 32) {
-    return {
-      isValid: false,
-      error: `Bracket is not full. Current count: ${totalNames}/32. Need ${32 - totalNames} more names.`
-    };
-  }
-
-  if (totalNames > 32) {
-    return {
-      isValid: false,
-      error: `Bracket has too many names: ${totalNames}/32. This should not happen.`
-    };
-  }
-
-  // Check if tournament has already been generated
-  if (bracket.matchups.roundOf32.length > 0) {
-    return {
-      isValid: false,
-      error: 'Tournament has already been generated. Cannot regenerate matchups.'
-    };
-  }
-
-  return {
-    isValid: true,
-    error: null
-  };
-};
-
-module.exports = {
-  generateRoundOf32Matchups,
-  validateBracketForSeeding,
-  SEEDING_PAIRS
-};
+module.exports = { generateDivisionMatchups };

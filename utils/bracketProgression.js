@@ -73,25 +73,12 @@ function advanceMatchupWinners(bracket, targetRound) {
   const winners = [];
 
   // Process each matchup in the current round
+  // Winners are pre-set by the admin via the set-winner endpoint; do not compute from votes.
   currentMatchups.forEach((matchup, index) => {
-    // Determine winner based on vote count
-    let winnerId = null;
-    const name1Votes = matchup.votes?.name1Votes || 0;
-    const name2Votes = matchup.votes?.name2Votes || 0;
-
-    if (name1Votes > name2Votes) {
-      winnerId = matchup.name1Id;
-    } else if (name2Votes > name1Votes) {
-      winnerId = matchup.name2Id;
-    } else {
-      // Tie scenario: default to name1Id (can be customized)
-      // Alternative: throw error, require manual resolution, or use tiebreaker logic
-      winnerId = matchup.name1Id;
+    if (!matchup.winnerId) {
+      throw new Error(`Matchup ${matchup.id} has no winner set. Admin must set winners before advancing.`);
     }
-
-    // Set winner on current matchup
-    matchup.winnerId = winnerId;
-    winners.push(winnerId);
+    winners.push(matchup.winnerId);
   });
 
   // If this is the championship round, set the champion and return
