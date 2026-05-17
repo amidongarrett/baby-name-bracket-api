@@ -12,10 +12,13 @@ const {
   getPreviewMatchups,
   deleteName,
   generateBracket,
+  resetBracket,
   lockBracket,
   lockInOwner,
   castVote,
-  advanceRound
+  getUserVotes,
+  advanceRound,
+  resetRound
 } = require('../controllers/bracketController');
 
 /**
@@ -137,6 +140,7 @@ router.post('/bracket/generate', generateBracket);
  * - 400: Validation error (wrong name count, already locked, etc.)
  * - 500: Server error
  */
+router.post('/bracket/reset', resetBracket);
 router.post('/bracket/lock', lockBracket);
 router.post('/bracket/lock-in', lockInOwner);
 
@@ -164,6 +168,20 @@ router.post('/bracket/lock-in', lockInOwner);
 router.post('/bracket/advance', advanceRound);
 
 /**
+ * POST /api/bracket/reset-round
+ * Undo the most recent round advancement so parents can re-pick winners.
+ *
+ * No request body required — the bracket's currentRound field determines
+ * which round is rolled back.
+ *
+ * Response:
+ *   200: { message, currentRound, status }
+ *   400: Bracket not in 'active' or 'completed' state
+ *   500: Server error
+ */
+router.post('/bracket/reset-round', resetRound);
+
+/**
  * POST /api/votes/:matchupId
  * Cast a vote for a specific matchup
  *
@@ -188,5 +206,14 @@ router.post('/bracket/advance', advanceRound);
  * - 500: Server error
  */
 router.post('/votes/:matchupId', castVote);
+
+/**
+ * GET /api/votes/user/:voterId
+ * Return all matchup IDs a specific voter has already voted on.
+ * The frontend uses this on page load to disable already-voted buttons.
+ *
+ * Response: { voterId, votedMatchupIds: string[] }
+ */
+router.get('/votes/user/:voterId', getUserVotes);
 
 module.exports = router;

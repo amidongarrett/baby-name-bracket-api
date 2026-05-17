@@ -667,6 +667,40 @@ const generateBracket = async (req, res) => {
   }
 };
 
+// POST /api/bracket/reset
+// Clears generated matchups and resets bracket to draft state so it can be
+// regenerated. USE WITH CAUTION — this destroys all votes and matchup data.
+const resetBracket = async (req, res) => {
+  try {
+    const bracket = await getOrCreateBracket();
+
+    // Clear all matchups and votes
+    bracket.matchups.roundOf32 = [];
+    bracket.matchups.roundOf16 = [];
+    bracket.matchups.elite8 = [];
+    bracket.matchups.final4 = [];
+    bracket.matchups.championship = [];
+    bracket.votes = [];
+    bracket.championNameId = null;
+
+    // Reset status and round
+    bracket.status = 'draft';
+    bracket.currentRound = 'Round of 32';
+    bracket.owner1LockedIn = false;
+    bracket.owner2LockedIn = false;
+
+    await bracket.save();
+
+    return res.status(200).json({
+      message: 'Bracket reset to draft. Names are preserved — regenerate to apply new seeding.',
+      status: bracket.status,
+    });
+  } catch (err) {
+    console.error('Error resetting bracket:', err);
+    return res.status(500).json({ error: 'Failed to reset bracket' });
+  }
+};
+
 /**
  * POST /api/bracket/lock
  * Lock the bracket and copy preview matchups to permanent tournament structure
@@ -832,7 +866,9 @@ const castVote = async (req, res) => {
     let roundKey = null;
     
     for (const [key, matchups] of Object.entries(bracket.matchups)) {
-      const found = matchups.find(m => m.id === matchupId);
+      const found = matchups.find(
+        m => m.id === matchupId || m._id?.toString() === matchupId
+      );
       if (found) {
         matchup = found;
         roundKey = key;
@@ -994,6 +1030,7 @@ const advanceRound = async (req, res) => {
       success: true,
       message: `Successfully advanced winners from ${round} to the next round`,
       bracket: updatedBracket,
+      status: updatedBracket.status,
       currentRound: updatedBracket.currentRound,
       championNameId: updatedBracket.championNameId
     });
@@ -1089,6 +1126,142 @@ const lockInOwner = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/bracket/reset-round
+ * Undo the most recent round advancement so parents can re-pick winners.
+ *
+ * Round rollback map (currentRound → what to undo):
+ *   "Round of 16"  → clear roundOf32 winnerId fields,  empty roundOf16 matchups
+ *   "Elite 8"      → clear roundOf16 winnerId fields,  empty elite8 matchups
+ *   "Final 4"      → clear elite8 winnerId fields,     empty final4 matchups
+ *   "Championship" → clear final4 winnerId fields,     empty championship matchups
+ *   "Completed"    → clear championship winnerId fields, clear championNameId, reset status to 'active'
+ *   "Round of 32"  → edge case: just clear any winnerId already set on roundOf32 matchups
+ *
+ * Response:
+ *   200: { message, currentRound, status }
+ *   400: bracket not in 'active' or 'completed' state
+ *   500: server error
+ */
+const resetRound = async (req, res) => {
+  try {
+    const bracket = await getOrCreateBracket();
+
+    // Also look for a completed bracket since getOrCreateBracket only finds draft/active
+    let activeBracket = bracket;
+    if (bracket.status === 'draft') {
+      // Try to find an active or completed bracket
+      const found = await require('../models/Bracket').findOne({ status: { $in: ['active', 'completed'] } })
+        .sort({ createdAt: -1 });
+      if (found) {
+        activeBracket = found;
+      }
+    }
+
+    if (activeBracket.status !== 'active' && activeBracket.status !== 'completed') {
+      return res.status(400).json({
+        error: 'Cannot reset round. Bracket must be active or completed.',
+        status: activeBracket.status
+      });
+    }
+
+    const ROLLBACK_MAP = {
+      'Round of 16':  { prevLabel: 'Round of 32', prevKey: 'roundOf32',  currentKey: 'roundOf16'    },
+      'Elite 8':      { prevLabel: 'Round of 16', prevKey: 'roundOf16',  currentKey: 'elite8'       },
+      'Final 4':      { prevLabel: 'Elite 8',     prevKey: 'elite8',     currentKey: 'final4'       },
+      'Championship': { prevLabel: 'Final 4',     prevKey: 'final4',     currentKey: 'championship' },
+      'Completed':    { prevLabel: 'Championship', prevKey: 'championship', currentKey: null         }
+    };
+
+    const currentRound = activeBracket.currentRound;
+
+    if (currentRound === 'Round of 32') {
+      // Edge case: clear any winnerId already set on roundOf32 matchups
+      activeBracket.matchups.roundOf32.forEach(m => { m.winnerId = null; });
+      await activeBracket.save();
+      return res.status(200).json({
+        message: 'Round of 32 winner selections cleared. This is the first round — no previous round to roll back to.',
+        currentRound: activeBracket.currentRound,
+        status: activeBracket.status
+      });
+    }
+
+    const rollback = ROLLBACK_MAP[currentRound];
+    if (!rollback) {
+      return res.status(400).json({
+        error: `Unrecognized currentRound value: "${currentRound}"`,
+        status: activeBracket.status
+      });
+    }
+
+    // 1. Clear winnerId on all matchups in the previous round
+    activeBracket.matchups[rollback.prevKey].forEach(m => { m.winnerId = null; });
+
+    // 2. Clear (empty) the current round's matchups array (if applicable)
+    if (rollback.currentKey) {
+      activeBracket.matchups[rollback.currentKey] = [];
+    }
+
+    // 3. Roll currentRound back to the previous round label
+    activeBracket.currentRound = rollback.prevLabel;
+
+    // 4. If we were at "Completed", also clear champion fields and restore active status
+    if (currentRound === 'Completed') {
+      activeBracket.championNameId = null;
+      activeBracket.status = 'active';
+    }
+
+    await activeBracket.save();
+
+    return res.status(200).json({
+      message: `Round reset successful. Rolled back from "${currentRound}" to "${rollback.prevLabel}".`,
+      currentRound: activeBracket.currentRound,
+      status: activeBracket.status
+    });
+
+  } catch (error) {
+    console.error('Error in resetRound controller:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/votes/user/:voterId
+ * Return all matchup IDs the given voter has already voted on.
+ * Used by the frontend to disable vote buttons on page load.
+ *
+ * Response: { voterId, votedMatchupIds: string[] }
+ */
+const getUserVotes = async (req, res) => {
+  try {
+    const { voterId } = req.params;
+
+    if (!voterId || typeof voterId !== 'string' || voterId.trim() === '') {
+      return res.status(400).json({ error: 'Valid voterId is required' });
+    }
+
+    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } })
+      .sort({ createdAt: -1 });
+
+    if (!bracket) {
+      return res.status(200).json({ voterId, votedMatchupIds: [] });
+    }
+
+    const votedMatchupIds = bracket.votes
+      .filter(v => v.voterId === voterId)
+      .map(v => v.matchupId);
+
+    return res.status(200).json({ voterId, votedMatchupIds });
+
+  } catch (error) {
+    console.error('Error in getUserVotes controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   getBracket,
@@ -1096,8 +1269,11 @@ module.exports = {
   getPreviewMatchups,
   deleteName,
   generateBracket,
+  resetBracket,
   lockBracket,
   lockInOwner,
   castVote,
-  advanceRound
+  getUserVotes,
+  advanceRound,
+  resetRound
 };

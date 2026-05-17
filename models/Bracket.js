@@ -221,17 +221,45 @@ BracketSchema.pre('save', function() {
 
 // Get all names in the bracket (combined from all lists)
 // Shared names appear in both owner lists AND shared list, so we deduplicate
+// Get all names in the bracket interleaved by owner rank.
+// Returns [H#1, W#1, H#2, W#2, ..., H#16, W#16] so that when fed into the
+// seeding algorithm, Husband's #1 lands on seed 1 (left bracket half) and
+// Wife's #1 lands on seed 2 (right bracket half) — guaranteeing they can
+// only meet in the Finals, not in an early round.
 BracketSchema.methods.getAllNames = function() {
-  const uniqueNames = new Map();
-  
-  // Add all names, using ID as key to avoid duplicates
-  [...this.owner1Names, ...this.owner2Names, ...this.sharedNames].forEach(name => {
-    if (!uniqueNames.has(name.id)) {
-      uniqueNames.set(name.id, name);
+  const seenIds = new Set();
+  const interleaved = [];
+
+  const maxLen = Math.max(this.owner1Names.length, this.owner2Names.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    // Husband's name at rank i+1
+    if (i < this.owner1Names.length) {
+      const name = this.owner1Names[i];
+      if (!seenIds.has(name.id)) {
+        seenIds.add(name.id);
+        interleaved.push(name);
+      }
+    }
+    // Wife's name at rank i+1
+    if (i < this.owner2Names.length) {
+      const name = this.owner2Names[i];
+      if (!seenIds.has(name.id)) {
+        seenIds.add(name.id);
+        interleaved.push(name);
+      }
+    }
+  }
+
+  // Append any shared names not already captured above (edge-case guard)
+  this.sharedNames.forEach(name => {
+    if (!seenIds.has(name.id)) {
+      seenIds.add(name.id);
+      interleaved.push(name);
     }
   });
-  
-  return Array.from(uniqueNames.values());
+
+  return interleaved;
 };
 
 // Get total name count (counting each unique name only once)
