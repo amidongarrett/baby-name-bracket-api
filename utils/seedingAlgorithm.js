@@ -19,20 +19,79 @@
 
 const { v4: uuidv4 } = require('uuid');
 
+// Seed pairs per division slot (March Madness ordering)
+// name1 = top seed (owner's pick), name2 = cross-division opponent
+const SLOT_SEEDS = [
+  { seed1: 1,  seed2: 16 }, // Slot 0
+  { seed1: 8,  seed2: 9  }, // Slot 1
+  { seed1: 4,  seed2: 13 }, // Slot 2
+  { seed1: 5,  seed2: 12 }, // Slot 3
+  { seed1: 2,  seed2: 15 }, // Slot 4
+  { seed1: 7,  seed2: 10 }, // Slot 5
+  { seed1: 3,  seed2: 14 }, // Slot 6
+  { seed1: 6,  seed2: 11 }, // Slot 7
+];
+
 /**
  * Helper — build a single Round-of-32 matchup object.
  * @param {Object|null} nameA
  * @param {Object|null} nameB
+ * @param {number} slotIndex - 0–7, used to derive seed1/seed2
  */
-const makeMatchup = (nameA, nameB) => ({
+const makeMatchup = (nameA, nameB, slotIndex) => {
+  const seeds = SLOT_SEEDS[slotIndex] || { seed1: null, seed2: null };
+  return {
+    id: uuidv4(),
+    round: 'Round of 32',
+    name1Id: nameA?.id || null,
+    name2Id: nameB?.id || null,
+    seed1: seeds.seed1,
+    seed2: seeds.seed2,
+    votes: { name1Votes: 0, name2Votes: 0 },
+    winnerId: null,
+    createdAt: new Date()
+  };
+};
+
+/**
+ * Helper — build a stub matchup for a future (not yet played) round.
+ */
+const makeStubMatchup = (name1Id, name2Id, seed1, seed2, round) => ({
   id: uuidv4(),
-  round: 'Round of 32',
-  name1Id: nameA?.id || null,
-  name2Id: nameB?.id || null,
+  round,
+  name1Id,
+  name2Id,
+  seed1: seed1 ?? null,
+  seed2: seed2 ?? null,
   votes: { name1Votes: 0, name2Votes: 0 },
   winnerId: null,
   createdAt: new Date()
 });
+
+/**
+ * Project a full set of next-round stubs from the current round's matchups.
+ * Uses the top-seed (name1Id) as the expected winner of each matchup.
+ * Pairs: [0,1]→slot 0, [2,3]→slot 1, etc.
+ *
+ * @param {Array} currentMatchups
+ * @param {string} roundLabel - display label for the next round
+ * @returns {Array} stub matchup objects
+ */
+const projectNextRound = (currentMatchups, roundLabel) => {
+  const stubs = [];
+  for (let i = 0; i < currentMatchups.length; i += 2) {
+    const pair0 = currentMatchups[i];
+    const pair1 = currentMatchups[i + 1];
+    stubs.push(makeStubMatchup(
+      pair0.name1Id,
+      pair1 ? pair1.name1Id : null,
+      pair0.seed1,
+      pair1 ? pair1.seed1 : null,
+      roundLabel
+    ));
+  }
+  return stubs;
+};
 
 /**
  * Generate Division Matchups
@@ -55,29 +114,46 @@ const generateDivisionMatchups = (owner1Names, owner2Names) => {
   // Division 1: Owner 1 top-8 seeds vs Owner 2 bottom-8 seeds
   // o1[0] = H#1, o2[15] = W#16, etc.
   const div1 = [
-    makeMatchup(o1[0],  o2[15]),  // H#1  vs W#16
-    makeMatchup(o1[7],  o2[8]),   // H#8  vs W#9
-    makeMatchup(o1[3],  o2[12]),  // H#4  vs W#13
-    makeMatchup(o1[4],  o2[11]),  // H#5  vs W#12
-    makeMatchup(o1[1],  o2[14]),  // H#2  vs W#15
-    makeMatchup(o1[6],  o2[9]),   // H#7  vs W#10
-    makeMatchup(o1[2],  o2[13]),  // H#3  vs W#14
-    makeMatchup(o1[5],  o2[10]),  // H#6  vs W#11
+    makeMatchup(o1[0],  o2[15], 0),  // H#1  vs W#16
+    makeMatchup(o1[7],  o2[8],  1),  // H#8  vs W#9
+    makeMatchup(o1[3],  o2[12], 2),  // H#4  vs W#13
+    makeMatchup(o1[4],  o2[11], 3),  // H#5  vs W#12
+    makeMatchup(o1[1],  o2[14], 4),  // H#2  vs W#15
+    makeMatchup(o1[6],  o2[9],  5),  // H#7  vs W#10
+    makeMatchup(o1[2],  o2[13], 6),  // H#3  vs W#14
+    makeMatchup(o1[5],  o2[10], 7),  // H#6  vs W#11
   ];
 
   // Division 2: Owner 2 top-8 seeds vs Owner 1 bottom-8 seeds
   const div2 = [
-    makeMatchup(o2[0],  o1[15]),  // W#1  vs H#16
-    makeMatchup(o2[7],  o1[8]),   // W#8  vs H#9
-    makeMatchup(o2[3],  o1[12]),  // W#4  vs H#13
-    makeMatchup(o2[4],  o1[11]),  // W#5  vs H#12
-    makeMatchup(o2[1],  o1[14]),  // W#2  vs H#15
-    makeMatchup(o2[6],  o1[9]),   // W#7  vs H#10
-    makeMatchup(o2[2],  o1[13]),  // W#3  vs H#14
-    makeMatchup(o2[5],  o1[10]),  // W#6  vs H#11
+    makeMatchup(o2[0],  o1[15], 0),  // W#1  vs H#16
+    makeMatchup(o2[7],  o1[8],  1),  // W#8  vs H#9
+    makeMatchup(o2[3],  o1[12], 2),  // W#4  vs H#13
+    makeMatchup(o2[4],  o1[11], 3),  // W#5  vs H#12
+    makeMatchup(o2[1],  o1[14], 4),  // W#2  vs H#15
+    makeMatchup(o2[6],  o1[9],  5),  // W#7  vs H#10
+    makeMatchup(o2[2],  o1[13], 6),  // W#3  vs H#14
+    makeMatchup(o2[5],  o1[10], 7),  // W#6  vs H#11
   ];
 
   return [...div1, ...div2];
 };
 
-module.exports = { generateDivisionMatchups };
+/**
+ * Generate stubs for all five tournament rounds at bracket creation time.
+ * Uses the top-seed (name1Id) as the projected winner at each stage.
+ *
+ * @param {Array} owner1Names - Owner 1's names sorted by rank (16 entries expected)
+ * @param {Array} owner2Names - Owner 2's names sorted by rank (16 entries expected)
+ * @returns {{ roundOf32, roundOf16, elite8, final4, championship }}
+ */
+const generateAllRoundStubs = (owner1Names, owner2Names) => {
+  const roundOf32     = generateDivisionMatchups(owner1Names, owner2Names);
+  const roundOf16     = projectNextRound(roundOf32,  'Round of 16');
+  const elite8        = projectNextRound(roundOf16,  'Elite 8');
+  const final4        = projectNextRound(elite8,     'Final 4');
+  const championship  = projectNextRound(final4,     'Championship');
+  return { roundOf32, roundOf16, elite8, final4, championship };
+};
+
+module.exports = { generateDivisionMatchups, generateAllRoundStubs };

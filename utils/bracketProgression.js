@@ -89,34 +89,46 @@ function advanceMatchupWinners(bracket, targetRound) {
     return bracket;
   }
 
-  // Initialize next round matchups array if it doesn't exist
+  // Ensure next round array exists (pre-generated stubs should already be present)
   if (!bracket.matchups[nextRound]) {
     bracket.matchups[nextRound] = [];
   }
 
-  // Clear existing next round matchups (in case of re-generation)
-  bracket.matchups[nextRound] = [];
+  // Build a map of nameId → seed from the current round so seeds propagate forward
+  const seedMap = {};
+  for (const m of currentMatchups) {
+    if (m.name1Id) seedMap[m.name1Id] = m.seed1 ?? null;
+    if (m.name2Id) seedMap[m.name2Id] = m.seed2 ?? null;
+  }
 
-  // Pair winners into next round matchups
+  // Update pre-existing next-round stubs in place so votes already cast are preserved.
   // Pattern: matchups [0,1] → slot 0, matchups [2,3] → slot 1, etc.
   for (let i = 0; i < winners.length; i += 2) {
-    const name1Id = winners[i];
-    const name2Id = winners[i + 1] || null; // Handle odd number edge case
+    const name1Id  = winners[i];
+    const name2Id  = winners[i + 1] || null; // Handle odd number edge case
+    const pairIndex = i / 2;
 
-    const newMatchup = {
-      id: uuidv4(),
-      round: displayNameMap[nextRound],
-      name1Id: name1Id,
-      name2Id: name2Id,
-      votes: {
-        name1Votes: 0,
-        name2Votes: 0
-      },
-      winnerId: null,
-      createdAt: new Date()
-    };
-
-    bracket.matchups[nextRound].push(newMatchup);
+    const stub = bracket.matchups[nextRound][pairIndex];
+    if (stub) {
+      // Update name IDs and seeds in place — do NOT reset votes or winnerId
+      stub.name1Id = name1Id;
+      stub.name2Id = name2Id;
+      stub.seed1   = seedMap[name1Id] ?? null;
+      stub.seed2   = seedMap[name2Id] ?? null;
+    } else {
+      // Fallback: stub missing (data inconsistency guard) — push a new object
+      bracket.matchups[nextRound].push({
+        id: require('uuid').v4(),
+        round: displayNameMap[nextRound],
+        name1Id,
+        name2Id,
+        seed1: seedMap[name1Id] ?? null,
+        seed2: seedMap[name2Id] ?? null,
+        votes: { name1Votes: 0, name2Votes: 0 },
+        winnerId: null,
+        createdAt: new Date()
+      });
+    }
   }
 
   // Update bracket current round
