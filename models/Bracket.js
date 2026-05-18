@@ -89,6 +89,14 @@ const MatchupSchema = new mongoose.Schema({
     required: false,
     default: null
   },
+  seed1: {
+    type: Number,
+    default: null
+  },
+  seed2: {
+    type: Number,
+    default: null
+  },
   votes: {
     name1Votes: {
       type: Number,
@@ -161,6 +169,16 @@ const BracketSchema = new mongoose.Schema({
     type: [NameSchema],
     default: []
   },
+
+  // Overflow queues — names waiting to enter an owner's list once a slot opens
+  owner1PendingNames: {
+    type: [NameSchema],
+    default: []
+  },
+  owner2PendingNames: {
+    type: [NameSchema],
+    default: []
+  },
   
   // Preview matchups (auto-calculated in draft mode, not saved permanently)
   previewMatchups: {
@@ -225,7 +243,16 @@ const BracketSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
-  }
+  },
+
+  // Multi-bracket lobby identity fields
+  inviteCode:   { type: String, unique: true, sparse: true },
+  owner1UserId: { type: String, default: null },
+  owner1Name:   { type: String, default: '' },
+  owner2UserId: { type: String, default: null },
+  owner2Name:   { type: String, default: '' },
+  owner2Email:  { type: String, default: '' },
+  guestUserIds: { type: [String], default: [] }
 });
 
 // Pre-save hook to update the updatedAt timestamp
@@ -332,6 +359,12 @@ BracketSchema.index({ 'owner1Names.id': 1 });
 BracketSchema.index({ 'owner2Names.id': 1 });
 BracketSchema.index({ 'sharedNames.id': 1 });
 BracketSchema.index({ 'votes.voterId': 1 });
+BracketSchema.index({ 'owner1PendingNames.id': 1 });
+BracketSchema.index({ 'owner2PendingNames.id': 1 });
+BracketSchema.index({ inviteCode: 1 });
+BracketSchema.index({ owner1UserId: 1 });
+BracketSchema.index({ owner2UserId: 1 });
+BracketSchema.index({ guestUserIds: 1 });
 
 const Bracket = mongoose.model('Bracket', BracketSchema);
 
