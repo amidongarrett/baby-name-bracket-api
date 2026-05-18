@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 /**
  * Baby Name Bracket API Server
  * Express backend for managing bracket sessions and name submissions
@@ -5,12 +7,10 @@
 
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const { connectDB } = require('./config/database');
 const bracketRoutes = require('./routes/bracketRoutes');
-
-// Load environment variables
-dotenv.config();
+const authRoutes = require('./routes/authRoutes');
+const lobbyRoutes = require('./routes/lobbyRoutes');
 
 // Connect to MongoDB
 connectDB();
@@ -85,6 +85,12 @@ app.get('/', (req, res) => {
 
 // Mount bracket routes under /api prefix
 app.use('/api', bracketRoutes);
+
+// Mount auth routes under /api/auth
+app.use('/api/auth', authRoutes);
+
+// Mount lobby routes under /api
+app.use('/api', lobbyRoutes);
 
 // API root endpoint
 app.get('/api', (req, res) => {

@@ -1,6 +1,7 @@
 const Bracket = require('../models/Bracket');
+const BabyName = require('../models/BabyName');
 const { v4: uuidv4 } = require('uuid');
-const { generateDivisionMatchups } = require('../utils/seedingAlgorithm');
+const { generateDivisionMatchups, generateAllRoundStubs } = require('../utils/seedingAlgorithm');
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
 
 /**
@@ -16,7 +17,7 @@ const normalizeName = (name) => {
 const getOrCreateBracket = async () => {
   let bracket = await Bracket.findOne({ status: { $in: ['draft', 'active'] } })
     .sort({ createdAt: -1 });
-  
+
   if (!bracket) {
     bracket = new Bracket({
       name: 'Baby Name March Madness',
@@ -27,8 +28,20 @@ const getOrCreateBracket = async () => {
     });
     await bracket.save();
   }
-  
+
   return bracket;
+};
+
+/**
+ * Helper function to find a bracket by ID, or fall back to getOrCreateBracket.
+ */
+const findBracket = async (bracketId) => {
+  if (bracketId) {
+    const bracket = await Bracket.findById(bracketId);
+    if (!bracket) throw new Error(`Bracket not found: ${bracketId}`);
+    return bracket;
+  }
+  return getOrCreateBracket();
 };
 
 /**
@@ -49,7 +62,7 @@ const getOrCreateBracket = async () => {
  */
 const addName = async (req, res) => {
   try {
-    const { name, owner } = req.body;
+    const { name, owner, bracketId } = req.body;
 
     // Validation
     if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -67,8 +80,8 @@ const addName = async (req, res) => {
     const trimmedName = name.trim();
     const normalizedName = normalizeName(trimmedName);
 
-    // Get or create the active bracket
-    const bracket = await getOrCreateBracket();
+    // Get or create the active bracket (or find specific bracket by ID)
+    const bracket = await findBracket(bracketId);
 
     // Check if bracket is full (32 names total)
     if (bracket.isFull()) {
@@ -260,50 +273,7 @@ const getBracket = async (req, res) => {
       });
     }
 
-    // Prepare response with organized data
-    const response = {
-      id: bracket._id,
-      name: bracket.name,
-      status: bracket.status,
-      currentRound: bracket.currentRound,
-      
-      // Name lists
-      names: {
-        owner1: bracket.owner1Names,
-        owner2: bracket.owner2Names,
-        shared: bracket.sharedNames
-      },
-      
-      // Counts for UI display
-      counts: {
-        owner1: bracket.owner1Names.length,
-        owner2: bracket.owner2Names.length,
-        shared: bracket.sharedNames.length,
-        total: bracket.getTotalNameCount(),
-        remaining: 32 - bracket.getTotalNameCount()
-      },
-      
-      // Matchups organized by round
-      matchups: {
-        roundOf32: bracket.matchups.roundOf32,
-        roundOf16: bracket.matchups.roundOf16,
-        elite8: bracket.matchups.elite8,
-        final4: bracket.matchups.final4,
-        championship: bracket.matchups.championship
-      },
-      
-      // Champion (if tournament is complete)
-      champion: bracket.championNameId ? {
-        nameId: bracket.championNameId,
-        name: bracket.findNameById(bracket.championNameId)
-      } : null,
-      
-      // Timestamps
-      createdAt: bracket.createdAt,
-      updatedAt: bracket.updatedAt
-    };
-
-    return res.status(200).json(response);
+    return res.status(200).json(buildCurrentBracketResponse(bracket));
 
   } catch (error) {
     console.error('Error in getBracket controller:', error);
@@ -312,6 +282,66 @@ const getBracket = async (req, res) => {
       message: error.message
     });
   }
+};
+
+/**
+ * Build the standard response object for the current bracket.
+ * Shared by getCurrentBracket, deleteName, removeSharedName, and removePendingName.
+ */
+const buildCurrentBracketResponse = (bracket) => {
+  const allNames = bracket.getAllNames();
+  return {
+    id: bracket._id,
+    name: bracket.name,
+    status: bracket.status,
+    currentRound: bracket.currentRound,
+    owner1LockedIn: bracket.owner1LockedIn,
+    owner2LockedIn: bracket.owner2LockedIn,
+
+    // Ownership & invite
+    owner1UserId:  bracket.owner1UserId  || null,
+    owner2UserId:  bracket.owner2UserId  || null,
+    owner1Name:    bracket.owner1Name    || '',
+    owner2Name:    bracket.owner2Name    || '',
+    inviteCode:    bracket.inviteCode    || null,
+
+    // Name lists (flat structure for frontend compatibility)
+    owner1Names: bracket.owner1Names,
+    owner2Names: bracket.owner2Names,
+    sharedNames: bracket.sharedNames,
+    owner1PendingNames: bracket.owner1PendingNames,
+    owner2PendingNames: bracket.owner2PendingNames,
+    allNames: allNames,
+
+    // Counts for UI display
+    owner1Count: bracket.owner1Names.length,
+    owner2Count: bracket.owner2Names.length,
+    sharedCount: bracket.sharedNames.length,
+    totalNames: bracket.getTotalNameCount(),
+    remaining: 32 - bracket.getTotalNameCount(),
+
+    // Matchups organized by round
+    matchups: {
+      roundOf32: bracket.matchups.roundOf32,
+      roundOf16: bracket.matchups.roundOf16,
+      elite8: bracket.matchups.elite8,
+      final4: bracket.matchups.final4,
+      championship: bracket.matchups.championship
+    },
+
+    // Champion (if tournament is complete)
+    champion: bracket.championNameId ? {
+      nameId: bracket.championNameId,
+      name: bracket.findNameById(bracket.championNameId)
+    } : null,
+
+    // Admin-published rounds (guests see winner highlights only for these)
+    publishedRounds: bracket.publishedRounds || [],
+
+    // Timestamps
+    createdAt: bracket.createdAt,
+    updatedAt: bracket.updatedAt
+  };
 };
 
 /**
@@ -340,61 +370,15 @@ const getCurrentBracket = async (req, res) => {
         owner1Names: [],
         owner2Names: [],
         sharedNames: [],
+        owner1PendingNames: [],
+        owner2PendingNames: [],
         allNames: [],
         totalNames: 0,
         matchups: null
       });
     }
 
-    // Get all unique names for the frontend
-    const allNames = bracket.getAllNames();
-
-    // Prepare response matching frontend expectations
-    const response = {
-      id: bracket._id,
-      name: bracket.name,
-      status: bracket.status,
-      currentRound: bracket.currentRound,
-      owner1LockedIn: bracket.owner1LockedIn,
-      owner2LockedIn: bracket.owner2LockedIn,
-      
-      // Name lists (flat structure for frontend compatibility)
-      owner1Names: bracket.owner1Names,
-      owner2Names: bracket.owner2Names,
-      sharedNames: bracket.sharedNames,
-      allNames: allNames,
-      
-      // Counts for UI display
-      owner1Count: bracket.owner1Names.length,
-      owner2Count: bracket.owner2Names.length,
-      sharedCount: bracket.sharedNames.length,
-      totalNames: bracket.getTotalNameCount(),
-      remaining: 32 - bracket.getTotalNameCount(),
-      
-      // Matchups organized by round
-      matchups: {
-        roundOf32: bracket.matchups.roundOf32,
-        roundOf16: bracket.matchups.roundOf16,
-        elite8: bracket.matchups.elite8,
-        final4: bracket.matchups.final4,
-        championship: bracket.matchups.championship
-      },
-      
-      // Champion (if tournament is complete)
-      champion: bracket.championNameId ? {
-        nameId: bracket.championNameId,
-        name: bracket.findNameById(bracket.championNameId)
-      } : null,
-      
-      // Admin-published rounds (guests see winner highlights only for these)
-      publishedRounds: bracket.publishedRounds || [],
-
-      // Timestamps
-      createdAt: bracket.createdAt,
-      updatedAt: bracket.updatedAt
-    };
-
-    return res.status(200).json(response);
+    return res.status(200).json(buildCurrentBracketResponse(bracket));
 
   } catch (error) {
     console.error('Error in getCurrentBracket controller:', error);
@@ -420,15 +404,15 @@ const getCurrentBracket = async (req, res) => {
  */
 const getPreviewMatchups = async (req, res) => {
   try {
-    // Get the active bracket
-    const bracket = await getOrCreateBracket();
+    // Get the active bracket (or find specific bracket by ID)
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
 
     // Get all names (can be < 32)
     const totalNames = bracket.getTotalNameCount();
-    const allNames = bracket.getAllNames();
 
     // Generate preview matchups using the same algorithm as generateBracket (handles < 32 names)
-    const previewMatchups = generateRoundOf32Matchups(allNames);
+    const previewMatchups = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
 
     // Enrich matchups with full name details for the frontend
     const enrichedMatchups = previewMatchups.map((matchup, index) => {
@@ -505,6 +489,7 @@ const getPreviewMatchups = async (req, res) => {
 const deleteName = async (req, res) => {
   try {
     const { nameId } = req.params;
+    const bracketId = req.body.bracketId || req.query.bracketId;
 
     // Validation
     if (!nameId || typeof nameId !== 'string') {
@@ -513,8 +498,8 @@ const deleteName = async (req, res) => {
       });
     }
 
-    // Get the active bracket
-    const bracket = await getOrCreateBracket();
+    // Get the active bracket (or find specific bracket by ID)
+    const bracket = await findBracket(bracketId);
 
     // Track which lists the name was found in and the name details
     const foundInLists = [];
@@ -559,7 +544,7 @@ const deleteName = async (req, res) => {
     // Auto-calculate preview matchups if bracket is in draft mode
     if (bracket.status === 'draft') {
       const totalNames = bracket.getTotalNameCount();
-      
+
       if (totalNames === 32) {
         // Exactly 32 names: generate preview matchups
         const allNames = bracket.getAllNames();
@@ -574,20 +559,18 @@ const deleteName = async (req, res) => {
     // MongoDB automatically maintains array order, so ranks are preserved sequentially
     await bracket.save();
 
-    return res.status(200).json({
-      message: 'Name deleted successfully',
-      deletedName: {
-        id: nameToDelete.id,
-        value: nameToDelete.value,
-        fromLists: foundInLists
-      },
-      bracket: {
-        owner1Count: bracket.owner1Names.length,
-        owner2Count: bracket.owner2Names.length,
-        sharedCount: bracket.sharedNames.length,
-        totalCount: bracket.getTotalNameCount()
-      }
-    });
+    // Auto-promote the oldest pending name if the affected owner's list is now below 16
+    if (foundInLists.includes('owner1Names') && bracket.owner1PendingNames.length > 0 && bracket.owner1Names.length < 16) {
+      const promoted = bracket.owner1PendingNames.shift();
+      bracket.owner1Names.push(promoted);
+      await bracket.save();
+    } else if (foundInLists.includes('owner2Names') && bracket.owner2PendingNames.length > 0 && bracket.owner2Names.length < 16) {
+      const promoted = bracket.owner2PendingNames.shift();
+      bracket.owner2Names.push(promoted);
+      await bracket.save();
+    }
+
+    return res.status(200).json(buildCurrentBracketResponse(bracket));
 
   } catch (error) {
     console.error('Error in deleteName controller:', error);
@@ -595,6 +578,86 @@ const deleteName = async (req, res) => {
       error: 'Internal server error',
       message: error.message
     });
+  }
+};
+
+/**
+ * DELETE /api/shared-names/:id
+ * Remove a name from sharedNames.
+ * If the original adder is removing it, the name is transferred to the other owner's
+ * active list (if below 16) or their pending queue (if at 16).
+ */
+const removeSharedName = async (req, res) => {
+  try {
+    const { id: nameId } = req.params;
+    const { removedBy, bracketId } = req.body;
+
+    if (!nameId || !removedBy || !['Owner 1', 'Owner 2'].includes(removedBy)) {
+      return res.status(400).json({ error: 'nameId param and removedBy body field ("Owner 1" or "Owner 2") are required' });
+    }
+
+    const bracket = await findBracket(bracketId || req.query.bracketId);
+    const sharedIndex = bracket.sharedNames.findIndex(n => n.id === nameId);
+    if (sharedIndex === -1) return res.status(404).json({ error: 'Shared name not found' });
+
+    const sharedItem = bracket.sharedNames[sharedIndex];
+    bracket.sharedNames.splice(sharedIndex, 1);
+
+    const isOriginalAdder = sharedItem.submittedBy === removedBy;
+    if (isOriginalAdder) {
+      const otherOwnerList   = removedBy === 'Owner 1' ? bracket.owner2Names        : bracket.owner1Names;
+      const otherPendingList = removedBy === 'Owner 1' ? bracket.owner2PendingNames : bracket.owner1PendingNames;
+      const transferEntry = {
+        id: uuidv4(),
+        value: sharedItem.value,
+        submittedBy: sharedItem.submittedBy,
+        isShared: false,
+        createdAt: new Date()
+      };
+      if (otherOwnerList.length < 16) {
+        otherOwnerList.push(transferEntry);
+      } else {
+        otherPendingList.push(transferEntry);
+      }
+    }
+
+    await bracket.save();
+    return res.status(200).json(buildCurrentBracketResponse(bracket));
+  } catch (err) {
+    console.error('Error removing shared name:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+/**
+ * DELETE /api/pending-names/:id
+ * Remove a name from either owner's pending queue.
+ */
+const removePendingName = async (req, res) => {
+  try {
+    const { id: nameId } = req.params;
+    const bracketId = req.body.bracketId || req.query.bracketId;
+    if (!nameId) return res.status(400).json({ error: 'nameId param required' });
+
+    const bracket = await findBracket(bracketId);
+
+    const idx1 = bracket.owner1PendingNames.findIndex(n => n.id === nameId);
+    if (idx1 !== -1) {
+      bracket.owner1PendingNames.splice(idx1, 1);
+    } else {
+      const idx2 = bracket.owner2PendingNames.findIndex(n => n.id === nameId);
+      if (idx2 !== -1) {
+        bracket.owner2PendingNames.splice(idx2, 1);
+      } else {
+        return res.status(404).json({ error: 'Pending name not found' });
+      }
+    }
+
+    await bracket.save();
+    return res.status(200).json(buildCurrentBracketResponse(bracket));
+  } catch (err) {
+    console.error('Error removing pending name:', err);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -613,7 +676,8 @@ const deleteName = async (req, res) => {
 const generateBracket = async (req, res) => {
   try {
     // Get the active bracket
-    const bracket = await getOrCreateBracket();
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
 
     // Check if tournament has already been generated
     if (bracket.matchups.roundOf32.length > 0 && bracket.status === 'active') {
@@ -628,11 +692,10 @@ const generateBracket = async (req, res) => {
     }
 
     // Get all names from the three lists (can be < 32)
-    const allNames = bracket.getAllNames();
     const totalNames = bracket.getTotalNameCount();
 
     // Generate Round of 32 matchups using March Madness seeding (handles < 32 names)
-    const roundOf32Matchups = generateRoundOf32Matchups(allNames);
+    const roundOf32Matchups = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
 
     // Save matchups to the bracket
     bracket.matchups.roundOf32 = roundOf32Matchups;
@@ -728,7 +791,8 @@ const resetBracket = async (req, res) => {
 const lockBracket = async (req, res) => {
   try {
     // Get the active bracket
-    const bracket = await getOrCreateBracket();
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
 
     // Validate bracket status
     if (bracket.status === 'active') {
@@ -762,8 +826,13 @@ const lockBracket = async (req, res) => {
       });
     }
 
-    // Generate division matchups directly and write to permanent roundOf32
-    bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
+    // Generate all round stubs upfront so future rounds are immediately visible
+    const allStubs = generateAllRoundStubs(bracket.owner1Names, bracket.owner2Names);
+    bracket.matchups.roundOf32    = allStubs.roundOf32;
+    bracket.matchups.roundOf16    = allStubs.roundOf16;
+    bracket.matchups.elite8       = allStubs.elite8;
+    bracket.matchups.final4       = allStubs.final4;
+    bracket.matchups.championship = allStubs.championship;
 
     // Change status to 'active' and set current round
     bracket.status = 'active';
@@ -850,8 +919,8 @@ const castVote = async (req, res) => {
     }
 
     // Get the active bracket
-    const bracket = await Bracket.findOne({ status: 'active' })
-      .sort({ createdAt: -1 });
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
 
     if (!bracket) {
       return res.status(404).json({
@@ -1032,7 +1101,7 @@ const castVote = async (req, res) => {
  */
 const advanceRound = async (req, res) => {
   try {
-    const { round } = req.body;
+    const { round, bracketId } = req.body;
 
     // Validate round parameter
     if (!round) {
@@ -1050,9 +1119,10 @@ const advanceRound = async (req, res) => {
       });
     }
 
-    // Get the active bracket
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } })
-      .sort({ createdAt: -1 });
+    // Get the active bracket (or find specific bracket by ID)
+    const bracket = bracketId
+      ? await findBracket(bracketId)
+      : await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
 
     if (!bracket) {
       return res.status(404).json({
@@ -1105,7 +1175,7 @@ const advanceRound = async (req, res) => {
  */
 const lockInOwner = async (req, res) => {
   try {
-    const { owner } = req.body;
+    const { owner, bracketId } = req.body;
 
     if (owner !== 'Owner 1' && owner !== 'Owner 2') {
       return res.status(400).json({
@@ -1113,7 +1183,7 @@ const lockInOwner = async (req, res) => {
       });
     }
 
-    const bracket = await getOrCreateBracket();
+    const bracket = await findBracket(bracketId);
 
     if (bracket.status === 'active') {
       return res.status(400).json({
@@ -1134,8 +1204,13 @@ const lockInOwner = async (req, res) => {
     // If both owners are locked in and there are exactly 32 names, activate the bracket
     const totalNames = bracket.getTotalNameCount();
     if (bracket.owner1LockedIn && bracket.owner2LockedIn && totalNames === 32) {
-      // Generate division matchups directly and write to permanent roundOf32
-      bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
+      // Generate all round stubs upfront so future rounds are immediately visible
+      const allStubs = generateAllRoundStubs(bracket.owner1Names, bracket.owner2Names);
+      bracket.matchups.roundOf32    = allStubs.roundOf32;
+      bracket.matchups.roundOf16    = allStubs.roundOf16;
+      bracket.matchups.elite8       = allStubs.elite8;
+      bracket.matchups.final4       = allStubs.final4;
+      bracket.matchups.championship = allStubs.championship;
 
       bracket.status = 'active';
       bracket.currentRound = 'Round of 32';
@@ -1177,16 +1252,21 @@ const lockInOwner = async (req, res) => {
  */
 const resetRound = async (req, res) => {
   try {
-    const bracket = await getOrCreateBracket();
+    const bracketId = (req.body && req.body.bracketId) || req.query.bracketId;
 
-    // Also look for a completed bracket since getOrCreateBracket only finds draft/active
-    let activeBracket = bracket;
-    if (bracket.status === 'draft') {
-      // Try to find an active or completed bracket
-      const found = await require('../models/Bracket').findOne({ status: { $in: ['active', 'completed'] } })
-        .sort({ createdAt: -1 });
-      if (found) {
-        activeBracket = found;
+    let activeBracket;
+    if (bracketId) {
+      activeBracket = await findBracket(bracketId);
+    } else {
+      const bracket = await getOrCreateBracket();
+      activeBracket = bracket;
+      // Also look for a completed bracket since getOrCreateBracket only finds draft/active
+      if (bracket.status === 'draft') {
+        const found = await require('../models/Bracket').findOne({ status: { $in: ['active', 'completed'] } })
+          .sort({ createdAt: -1 });
+        if (found) {
+          activeBracket = found;
+        }
       }
     }
 
@@ -1229,9 +1309,11 @@ const resetRound = async (req, res) => {
     // 1. Clear winnerId on all matchups in the previous round
     activeBracket.matchups[rollback.prevKey].forEach(m => { m.winnerId = null; });
 
-    // 2. Clear (empty) the current round's matchups array (if applicable)
+    // 2. Restore the rolled-back round's stubs to their seeded state so future-round
+    //    cards remain visible (rather than clearing the array to empty).
     if (rollback.currentKey) {
-      activeBracket.matchups[rollback.currentKey] = [];
+      const freshStubs = generateAllRoundStubs(activeBracket.owner1Names, activeBracket.owner2Names);
+      activeBracket.matchups[rollback.currentKey] = freshStubs[rollback.currentKey];
     }
 
     // 3. Roll currentRound back to the previous round label
@@ -1307,7 +1389,8 @@ const guestLockIn = async (req, res) => {
       return res.status(400).json({ error: 'voterId and round are required' });
     }
 
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
     if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
 
     // Prevent duplicate lock-in for same round
@@ -1336,7 +1419,8 @@ const setMatchupWinner = async (req, res) => {
       return res.status(400).json({ error: 'matchupId and winnerId are required' });
     }
 
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
     if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
 
     // Search all rounds for this matchup
@@ -1367,7 +1451,8 @@ const publishRound = async (req, res) => {
     const { round } = req.body;
     if (!round) return res.status(400).json({ error: 'round is required' });
 
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
     if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
 
     if (!bracket.publishedRounds.includes(round)) {
@@ -1387,7 +1472,8 @@ const publishRound = async (req, res) => {
 // seeding algorithm if 32 names are present. Names are preserved through both steps.
 const resetAndRegenerate = async (req, res) => {
   try {
-    const bracket = await getOrCreateBracket();
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
 
     // 1. Clear everything except names
     bracket.matchups.roundOf32    = [];
@@ -1414,8 +1500,13 @@ const resetAndRegenerate = async (req, res) => {
       });
     }
 
-    // 3. Generate fresh matchups with new seeding algorithm
-    bracket.matchups.roundOf32 = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
+    // 3. Generate all round stubs upfront so future rounds are immediately visible
+    const allStubs = generateAllRoundStubs(bracket.owner1Names, bracket.owner2Names);
+    bracket.matchups.roundOf32    = allStubs.roundOf32;
+    bracket.matchups.roundOf16    = allStubs.roundOf16;
+    bracket.matchups.elite8       = allStubs.elite8;
+    bracket.matchups.final4       = allStubs.final4;
+    bracket.matchups.championship = allStubs.championship;
     bracket.status = 'active';
     bracket.currentRound = 'Round of 32';
 
@@ -1433,6 +1524,51 @@ const resetAndRegenerate = async (req, res) => {
   }
 };
 
+// POST /api/admin/unlock-names
+// Clears all matchups, votes, guestLockIns, publishedRounds, and championNameId,
+// resets status to 'draft' and currentRound to 'Round of 32'.
+// Names (owner1Names, owner2Names, sharedNames) are preserved.
+// Returns 400 if bracket is already in draft status.
+const unlockNames = async (req, res) => {
+  try {
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
+
+    if (bracket.status === 'draft') {
+      return res.status(400).json({
+        error: 'Bracket is already in draft status. Nothing to unlock.'
+      });
+    }
+
+    bracket.matchups.roundOf32    = [];
+    bracket.matchups.roundOf16    = [];
+    bracket.matchups.elite8       = [];
+    bracket.matchups.final4       = [];
+    bracket.matchups.championship = [];
+    bracket.votes          = [];
+    bracket.guestLockIns   = [];
+    bracket.publishedRounds = [];
+    bracket.championNameId = null;
+    bracket.status         = 'draft';
+    bracket.currentRound   = 'Round of 32';
+    bracket.owner1LockedIn = false;
+    bracket.owner2LockedIn = false;
+
+    await bracket.save();
+
+    return res.status(200).json({
+      success: true,
+      bracket: {
+        status: bracket.status,
+        currentRound: bracket.currentRound,
+      }
+    });
+  } catch (err) {
+    console.error('Error in unlockNames controller:', err);
+    return res.status(500).json({ error: 'Failed to unlock names' });
+  }
+};
+
 /**
  * GET /api/bracket/owner-picks
  * Returns per-matchup owner picks across ALL rounds.
@@ -1440,7 +1576,8 @@ const resetAndRegenerate = async (req, res) => {
  */
 const getOwnerPicks = async (req, res) => {
   try {
-    const bracket = await getOrCreateBracket();
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
     const ownerPicks = {};
 
     bracket.votes
@@ -1459,12 +1596,34 @@ const getOwnerPicks = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/baby-names?gender=girl|boy|neutral
+ * Returns curated baby names filtered by gender.
+ * girl    → girl + neutral names
+ * boy     → boy + neutral names
+ * neutral → neutral names only
+ */
+const getNamesByGender = async (req, res) => {
+  const { gender } = req.query;
+  const valid = ['girl', 'boy', 'neutral'];
+  if (!gender || !valid.includes(gender)) {
+    return res.status(400).json({ error: 'gender query param must be girl, boy, or neutral' });
+  }
+  const filter = gender === 'girl'    ? { gender: { $in: ['girl', 'neutral'] } }
+               : gender === 'boy'     ? { gender: { $in: ['boy', 'neutral'] } }
+               : /* neutral */          { gender: 'neutral' };
+  const names = await BabyName.find(filter).lean();
+  return res.json({ names: names.map(n => ({ id: n.id, name: n.name, gender: n.gender })) });
+};
+
 module.exports = {
   addName,
   getBracket,
   getCurrentBracket,
   getPreviewMatchups,
   deleteName,
+  removeSharedName,
+  removePendingName,
   generateBracket,
   resetBracket,
   lockBracket,
@@ -1477,5 +1636,7 @@ module.exports = {
   guestLockIn,
   setMatchupWinner,
   publishRound,
-  resetAndRegenerate
+  resetAndRegenerate,
+  unlockNames,
+  getNamesByGender
 };

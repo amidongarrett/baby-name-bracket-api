@@ -11,6 +11,8 @@ const {
   getCurrentBracket,
   getPreviewMatchups,
   deleteName,
+  removeSharedName,
+  removePendingName,
   generateBracket,
   resetBracket,
   lockBracket,
@@ -23,7 +25,9 @@ const {
   guestLockIn,
   setMatchupWinner,
   publishRound,
-  resetAndRegenerate
+  resetAndRegenerate,
+  unlockNames,
+  getNamesByGender
 } = require('../controllers/bracketController');
 
 /**
@@ -42,6 +46,7 @@ const {
  * - Maximum 16 names per owner
  * - Maximum 32 total names in bracket
  */
+router.get('/baby-names', getNamesByGender);
 router.post('/names', addName);
 
 /**
@@ -109,6 +114,8 @@ router.get('/bracket/:sessionId', getBracket);
  * - 500: Server error
  */
 router.delete('/names/:nameId', deleteName);
+router.delete('/shared-names/:id', removeSharedName);
+router.delete('/pending-names/:id', removePendingName);
 
 /**
  * POST /api/bracket/generate
@@ -159,6 +166,7 @@ router.post('/bracket/guest-lock-in', guestLockIn);
 router.post('/admin/set-winner', setMatchupWinner);
 router.post('/admin/publish-round', publishRound);
 router.post('/admin/reset-and-regenerate', resetAndRegenerate);
+router.post('/admin/unlock-names', unlockNames);
 
 /**
  * POST /api/bracket/advance
