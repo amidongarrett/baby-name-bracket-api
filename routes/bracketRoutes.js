@@ -109,9 +109,9 @@ router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
 router.post('/bracket/:id/invite', requireAuth, sendInvites);
 router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
 
-router.get('/bracket/:id/my-bracket',       requireAuth, getMyBracket);
-router.post('/bracket/:id/my-bracket/pick', requireAuth, submitPick);
-router.post('/bracket/:id/my-bracket/lock', requireAuth, lockMyBracket);
+router.get('/bracket/:id/my-bracket',       getMyBracket);
+router.post('/bracket/:id/my-bracket/pick', submitPick);
+router.post('/bracket/:id/my-bracket/lock', lockMyBracket);
 
 /**
  * GET /api/bracket/:sessionId

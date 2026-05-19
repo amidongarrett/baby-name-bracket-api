@@ -1101,11 +1101,13 @@ const submitPick = async (req, res) => {
       return res.status(400).json({ error: 'Bracket is locked' });
     }
 
-    userBracket.picks[round][position] = selectedNameId;
-    userBracket.markModified('picks');
-    await userBracket.save();
+    const updated = await UserBracket.findOneAndUpdate(
+      { bracketId, userId },
+      { $set: { [`picks.${round}.${position}`]: selectedNameId } },
+      { new: true }
+    );
 
-    return res.status(200).json(userBracket);
+    return res.status(200).json(updated);
   } catch (error) {
     console.error('Error in submitPick controller:', error);
     return res.status(500).json({ error: 'Internal server error', message: error.message });
