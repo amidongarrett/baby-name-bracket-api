@@ -1165,6 +1165,71 @@ const advanceRound = async (req, res) => {
 };
 
 /**
+ * Proceed to Next Round
+ * Automatically picks vote-leaders as winners for the current round and advances to the next round.
+ *
+ * POST /api/bracket/:id/proceed-to-next-round
+ *
+ * @param {string} req.params.id - Bracket ID
+ * @returns {Object} { advanced: true, bracket: <updated> }
+ */
+const proceedToNextRound = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+
+    const bracket = await findBracket(bracketId);
+    if (!bracket) {
+      return res.status(404).json({ error: 'Bracket not found' });
+    }
+
+    if (bracket.status !== 'active') {
+      return res.status(400).json({ error: 'Bracket is not active' });
+    }
+
+    const displayToCamel = {
+      'Round of 32':  'roundOf32',
+      'Round of 16':  'roundOf16',
+      'Elite 8':      'elite8',
+      'Final 4':      'final4',
+      'Championship': 'championship',
+    };
+    const currentRoundKey = displayToCamel[bracket.currentRound];
+    if (!currentRoundKey) {
+      return res.status(400).json({ error: `Unrecognised round: ${bracket.currentRound}` });
+    }
+
+    const matchups = bracket.matchups[currentRoundKey];
+    if (!matchups || matchups.length === 0) {
+      return res.status(400).json({ error: 'No matchups found for the current round' });
+    }
+
+    const anyVotes = matchups.some(m => {
+      const { name1Votes = 0, name2Votes = 0 } = m.votes || {};
+      return (name1Votes + name2Votes) > 0;
+    });
+    if (!anyVotes) {
+      return res.status(400).json({ error: 'No votes have been cast in the current round' });
+    }
+
+    // Auto-set winnerId for every matchup: vote-leader wins; name1Id wins ties (deterministic)
+    for (const matchup of matchups) {
+      const { name1Votes = 0, name2Votes = 0 } = matchup.votes || {};
+      matchup.winnerId = (name2Votes > name1Votes) ? matchup.name2Id : matchup.name1Id;
+    }
+
+    advanceMatchupWinners(bracket, currentRoundKey);
+
+    await bracket.save();
+
+    return res.status(200).json({ advanced: true, bracket: buildCurrentBracketResponse(bracket) });
+
+  } catch (error) {
+    console.error('Error in proceedToNextRound:', error);
+    return res.status(500).json({ error: 'Failed to proceed to next round', message: error.message });
+  }
+};
+
+/**
  * POST /api/bracket/lock-in
  * Per-owner lock-in. Once both owners lock in and 32 names exist,
  * the bracket is automatically activated using the same logic as lockBracket.
@@ -1797,5 +1862,6 @@ module.exports = {
   sendInvites,
   deleteBracket,
   deleteGuestSession,
-  removeOwner2
+  removeOwner2,
+  proceedToNextRound
 };

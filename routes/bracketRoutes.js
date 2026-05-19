@@ -32,7 +32,8 @@ const {
   sendInvites,
   deleteBracket,
   deleteGuestSession,
-  removeOwner2
+  removeOwner2,
+  proceedToNextRound
 } = require('../controllers/bracketController');
 const { requireAuth } = require('../middleware/auth');
 
@@ -106,6 +107,7 @@ router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
  * Requires Bearer JWT; owner only.
  */
 router.post('/bracket/:id/invite', requireAuth, sendInvites);
+router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
 
 /**
  * GET /api/bracket/:sessionId
