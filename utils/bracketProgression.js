@@ -101,35 +101,24 @@ function advanceMatchupWinners(bracket, targetRound) {
     if (m.name2Id) seedMap[m.name2Id] = m.seed2 ?? null;
   }
 
-  // Update pre-existing next-round stubs in place so votes already cast are preserved.
+  // Build next-round matchups from real winners.
   // Pattern: matchups [0,1] → slot 0, matchups [2,3] → slot 1, etc.
+  const nextRoundMatchups = [];
   for (let i = 0; i < winners.length; i += 2) {
-    const name1Id  = winners[i];
-    const name2Id  = winners[i + 1] || null; // Handle odd number edge case
-    const pairIndex = i / 2;
-
-    const stub = bracket.matchups[nextRound][pairIndex];
-    if (stub) {
-      // Update name IDs and seeds in place — do NOT reset votes or winnerId
-      stub.name1Id = name1Id;
-      stub.name2Id = name2Id;
-      stub.seed1   = seedMap[name1Id] ?? null;
-      stub.seed2   = seedMap[name2Id] ?? null;
-    } else {
-      // Fallback: stub missing (data inconsistency guard) — push a new object
-      bracket.matchups[nextRound].push({
-        id: require('uuid').v4(),
-        round: displayNameMap[nextRound],
-        name1Id,
-        name2Id,
-        seed1: seedMap[name1Id] ?? null,
-        seed2: seedMap[name2Id] ?? null,
-        votes: { name1Votes: 0, name2Votes: 0 },
-        winnerId: null,
-        createdAt: new Date()
-      });
-    }
+    const name1Id = winners[i];
+    const name2Id = winners[i + 1] || null;
+    nextRoundMatchups.push({
+      id:        require('uuid').v4(),
+      round:     displayNameMap[nextRound],
+      name1Id,
+      name2Id,
+      seed1:     seedMap[name1Id] ?? null,
+      seed2:     seedMap[name2Id] ?? null,
+      winnerId:  null,
+      createdAt: new Date()
+    });
   }
+  bracket.matchups[nextRound] = nextRoundMatchups;
 
   // Update bracket current round
   bracket.currentRound = displayNameMap[nextRound];

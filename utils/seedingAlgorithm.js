@@ -47,50 +47,9 @@ const makeMatchup = (nameA, nameB, slotIndex) => {
     name2Id: nameB?.id || null,
     seed1: seeds.seed1,
     seed2: seeds.seed2,
-    votes: { name1Votes: 0, name2Votes: 0 },
     winnerId: null,
     createdAt: new Date()
   };
-};
-
-/**
- * Helper — build a stub matchup for a future (not yet played) round.
- */
-const makeStubMatchup = (name1Id, name2Id, seed1, seed2, round) => ({
-  id: uuidv4(),
-  round,
-  name1Id,
-  name2Id,
-  seed1: seed1 ?? null,
-  seed2: seed2 ?? null,
-  votes: { name1Votes: 0, name2Votes: 0 },
-  winnerId: null,
-  createdAt: new Date()
-});
-
-/**
- * Project a full set of next-round stubs from the current round's matchups.
- * Uses the top-seed (name1Id) as the expected winner of each matchup.
- * Pairs: [0,1]→slot 0, [2,3]→slot 1, etc.
- *
- * @param {Array} currentMatchups
- * @param {string} roundLabel - display label for the next round
- * @returns {Array} stub matchup objects
- */
-const projectNextRound = (currentMatchups, roundLabel) => {
-  const stubs = [];
-  for (let i = 0; i < currentMatchups.length; i += 2) {
-    const pair0 = currentMatchups[i];
-    const pair1 = currentMatchups[i + 1];
-    stubs.push(makeStubMatchup(
-      pair0.name1Id,
-      pair1 ? pair1.name1Id : null,
-      pair0.seed1,
-      pair1 ? pair1.seed1 : null,
-      roundLabel
-    ));
-  }
-  return stubs;
 };
 
 /**
@@ -148,12 +107,14 @@ const generateDivisionMatchups = (owner1Names, owner2Names) => {
  * @returns {{ roundOf32, roundOf16, elite8, final4, championship }}
  */
 const generateAllRoundStubs = (owner1Names, owner2Names) => {
-  const roundOf32     = generateDivisionMatchups(owner1Names, owner2Names);
-  const roundOf16     = projectNextRound(roundOf32,  'Round of 16');
-  const elite8        = projectNextRound(roundOf16,  'Elite 8');
-  const final4        = projectNextRound(elite8,     'Final 4');
-  const championship  = projectNextRound(final4,     'Championship');
-  return { roundOf32, roundOf16, elite8, final4, championship };
+  const roundOf32 = generateDivisionMatchups(owner1Names, owner2Names);
+  return {
+    roundOf32,
+    roundOf16:    [],
+    elite8:       [],
+    final4:       [],
+    championship: [],
+  };
 };
 
 module.exports = { generateDivisionMatchups, generateAllRoundStubs };

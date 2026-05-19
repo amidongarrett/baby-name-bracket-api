@@ -32,39 +32,6 @@ const NameSchema = new mongoose.Schema({
 });
 
 /**
- * Vote Schema
- * Represents a single vote cast by a guest user
- */
-const VoteSchema = new mongoose.Schema({
-  id: {
-    type: String,
-    default: uuidv4,
-    required: true
-  },
-  matchupId: {
-    type: String,
-    required: true
-  },
-  voterId: {
-    type: String,
-    required: true
-  },
-  selectedNameId: {
-    type: String,
-    required: true
-  },
-  role: {
-    type: String,
-    enum: ['Owner 1', 'Owner 2', null],
-    default: null
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
-});
-
-/**
  * Matchup Schema
  * Represents a single bracket matchup between two names
  */
@@ -96,18 +63,6 @@ const MatchupSchema = new mongoose.Schema({
   seed2: {
     type: Number,
     default: null
-  },
-  votes: {
-    name1Votes: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    name2Votes: {
-      type: Number,
-      default: 0,
-      min: 0
-    }
   },
   winnerId: {
     type: String,
@@ -210,19 +165,6 @@ const BracketSchema = new mongoose.Schema({
     }
   },
   
-  // All votes cast in this bracket
-  votes: {
-    type: [VoteSchema],
-    default: []
-  },
-  
-  // Tracks which guests have locked in their picks per round
-  guestLockIns: [{
-    voterId:  { type: String, required: true },
-    round:    { type: String, required: true },
-    lockedAt: { type: Date, default: Date.now }
-  }],
-
   // Rounds where admin has published official results to guests
   publishedRounds: {
     type: [String],
@@ -359,7 +301,6 @@ BracketSchema.index({ status: 1, createdAt: -1 });
 BracketSchema.index({ 'owner1Names.id': 1 });
 BracketSchema.index({ 'owner2Names.id': 1 });
 BracketSchema.index({ 'sharedNames.id': 1 });
-BracketSchema.index({ 'votes.voterId': 1 });
 BracketSchema.index({ 'owner1PendingNames.id': 1 });
 BracketSchema.index({ 'owner2PendingNames.id': 1 });
 BracketSchema.index({ inviteCode: 1 });

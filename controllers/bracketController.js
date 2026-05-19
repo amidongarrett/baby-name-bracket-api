@@ -1,9 +1,34 @@
 const Bracket = require('../models/Bracket');
 const BabyName = require('../models/BabyName');
+const UserBracket = require('../models/UserBracket');
 const { v4: uuidv4 } = require('uuid');
 const { generateDivisionMatchups, generateAllRoundStubs } = require('../utils/seedingAlgorithm');
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
 const { sendBracketInviteEmail } = require('../utils/email');
+
+async function fanOutScores(bracketId, roundKey, completedMatchups) {
+  const userBrackets = await UserBracket.find({ bracketId, lockedAt: { $ne: null } });
+  if (!userBrackets.length) return;
+
+  const ops = userBrackets.map(ub => {
+    let delta = 0;
+    completedMatchups.forEach((matchup, position) => {
+      if (
+        matchup.winnerId &&
+        ub.picks[roundKey] &&
+        ub.picks[roundKey][position] === matchup.winnerId
+      ) delta++;
+    });
+    return {
+      updateOne: {
+        filter: { _id: ub._id },
+        update: { $inc: { score: delta }, $set: { updatedAt: new Date() } },
+      },
+    };
+  });
+
+  await UserBracket.bulkWrite(ops);
+}
 
 /**
  * Helper function to normalize name strings for case-insensitive comparison
@@ -740,13 +765,12 @@ const resetBracket = async (req, res) => {
   try {
     const bracket = await getOrCreateBracket();
 
-    // Clear all matchups and votes
+    // Clear all matchups
     bracket.matchups.roundOf32 = [];
     bracket.matchups.roundOf16 = [];
     bracket.matchups.elite8 = [];
     bracket.matchups.final4 = [];
     bracket.matchups.championship = [];
-    bracket.votes = [];
     bracket.championNameId = null;
 
     // Reset status and round
@@ -855,228 +879,6 @@ const lockBracket = async (req, res) => {
 
   } catch (error) {
     console.error('Error in lockBracket controller:', error);
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: error.message
-    });
-  }
-};
-
-/**
- * POST /api/votes/:matchupId
- * Cast a vote for a specific matchup in the bracket
- *
- * Path Parameters:
- * - matchupId: UUID of the matchup to vote on
- *
- * Request Body:
- * {
- *   voterId: string (guest user identifier),
- *   selectedNameId: string (UUID of the chosen name)
- * }
- *
- * Business Rules:
- * - Prevents duplicate votes: each voterId can only vote once per matchupId
- * - Validates the selectedNameId is one of the two names in the matchup
- * - Increments the appropriate vote counter (name1Votes or name2Votes)
- * - Stores complete vote metadata for audit trail
- */
-// If both owners have now voted on this matchup, auto-set winnerId when they agree
-// or clear it when they conflict. No-op for guest votes (role is null).
-function resolveOwnerWinner(bracket, matchup, role) {
-  if (role !== 'Owner 1' && role !== 'Owner 2') return;
-  const o1Vote = bracket.votes.find(v => v.matchupId === matchup.id && v.role === 'Owner 1');
-  const o2Vote = bracket.votes.find(v => v.matchupId === matchup.id && v.role === 'Owner 2');
-  if (o1Vote && o2Vote) {
-    matchup.winnerId = (o1Vote.selectedNameId === o2Vote.selectedNameId)
-      ? o1Vote.selectedNameId
-      : null;
-  }
-}
-
-const castVote = async (req, res) => {
-  try {
-    const { matchupId } = req.params;
-    const { voterId, selectedNameId, role = null } = req.body;
-
-    // Validation
-    if (!matchupId || typeof matchupId !== 'string') {
-      return res.status(400).json({
-        error: 'Valid matchupId is required'
-      });
-    }
-
-    if (!voterId || typeof voterId !== 'string' || voterId.trim() === '') {
-      return res.status(400).json({
-        error: 'voterId is required and must be a non-empty string'
-      });
-    }
-
-    if (!selectedNameId || typeof selectedNameId !== 'string') {
-      return res.status(400).json({
-        error: 'selectedNameId is required and must be a valid UUID'
-      });
-    }
-
-    // Get the active bracket
-    const bracketId = req.query.bracketId || req.body.bracketId;
-    const bracket = await findBracket(bracketId);
-
-    if (!bracket) {
-      return res.status(404).json({
-        error: 'No active bracket found. Tournament may not have started yet.'
-      });
-    }
-
-    // Find the matchup across all rounds
-    let matchup = null;
-    let roundKey = null;
-    
-    for (const [key, matchups] of Object.entries(bracket.matchups)) {
-      const found = matchups.find(
-        m => m.id === matchupId || m._id?.toString() === matchupId
-      );
-      if (found) {
-        matchup = found;
-        roundKey = key;
-        break;
-      }
-    }
-
-    if (!matchup) {
-      return res.status(404).json({
-        error: 'Matchup not found',
-        matchupId
-      });
-    }
-
-    // Validate selectedNameId is one of the two names in this matchup
-    if (selectedNameId !== matchup.name1Id && selectedNameId !== matchup.name2Id) {
-      return res.status(400).json({
-        error: 'selectedNameId must be one of the names in this matchup',
-        validOptions: {
-          name1Id: matchup.name1Id,
-          name2Id: matchup.name2Id
-        }
-      });
-    }
-
-    // Check for duplicate vote: owners deduplicate by role (so both can vote independently
-    // even on the same device); guests deduplicate by voterId.
-    const existingVote = (role === 'Owner 1' || role === 'Owner 2')
-      ? bracket.votes.find(v => v.matchupId === matchup.id && v.role === role)
-      : bracket.votes.find(v => v.matchupId === matchupId && v.voterId === voterId);
-
-    if (existingVote) {
-      // Get the name details for response (needed in all branches)
-      const selectedName = bracket.findNameById(selectedNameId);
-      const matchupResponse = {
-        id: matchup.id,
-        round: matchup.round,
-        name1Id: matchup.name1Id,
-        name2Id: matchup.name2Id,
-        votes: {
-          name1Votes: matchup.votes.name1Votes,
-          name2Votes: matchup.votes.name2Votes,
-          total: matchup.votes.name1Votes + matchup.votes.name2Votes
-        }
-      };
-
-      // No change — same name selected again
-      if (existingVote.selectedNameId === selectedNameId) {
-        return res.status(200).json({
-          message: 'Vote unchanged',
-          vote: existingVote,
-          matchup: matchupResponse,
-          selectedName: selectedName ? { id: selectedName.id, value: selectedName.value } : null
-        });
-      }
-
-      // Different name — decrement old tally, update record, increment new tally
-      if (existingVote.selectedNameId === matchup.name1Id) {
-        matchup.votes.name1Votes = Math.max(0, matchup.votes.name1Votes - 1);
-      } else {
-        matchup.votes.name2Votes = Math.max(0, matchup.votes.name2Votes - 1);
-      }
-
-      existingVote.selectedNameId = selectedNameId;
-      existingVote.role = role;
-      existingVote.createdAt = new Date();
-
-      if (selectedNameId === matchup.name1Id) {
-        matchup.votes.name1Votes += 1;
-      } else {
-        matchup.votes.name2Votes += 1;
-      }
-
-      resolveOwnerWinner(bracket, matchup, role);
-      await bracket.save();
-
-      matchupResponse.votes = {
-        name1Votes: matchup.votes.name1Votes,
-        name2Votes: matchup.votes.name2Votes,
-        total: matchup.votes.name1Votes + matchup.votes.name2Votes
-      };
-
-      return res.status(200).json({
-        message: 'Vote updated successfully',
-        vote: existingVote,
-        matchup: matchupResponse,
-        selectedName: selectedName ? { id: selectedName.id, value: selectedName.value } : null
-      });
-    }
-
-    // Create vote metadata — always key by the matchup's UUID (not the URL param,
-    // which could be a MongoDB ObjectId string) so voteMap lookups are consistent.
-    const voteRecord = {
-      id: uuidv4(),
-      matchupId: matchup.id,
-      voterId,
-      selectedNameId,
-      role,
-      createdAt: new Date()
-    };
-
-    // Add vote to bracket's votes array
-    bracket.votes.push(voteRecord);
-
-    // Increment the appropriate vote tally in the matchup
-    if (selectedNameId === matchup.name1Id) {
-      matchup.votes.name1Votes += 1;
-    } else {
-      matchup.votes.name2Votes += 1;
-    }
-
-    resolveOwnerWinner(bracket, matchup, role);
-
-    // Save the updated bracket
-    await bracket.save();
-
-    // Get the name details for response
-    const selectedName = bracket.findNameById(selectedNameId);
-
-    return res.status(201).json({
-      message: 'Vote cast successfully',
-      vote: voteRecord,
-      matchup: {
-        id: matchup.id,
-        round: matchup.round,
-        name1Id: matchup.name1Id,
-        name2Id: matchup.name2Id,
-        votes: {
-          name1Votes: matchup.votes.name1Votes,
-          name2Votes: matchup.votes.name2Votes,
-          total: matchup.votes.name1Votes + matchup.votes.name2Votes
-        }
-      },
-      selectedName: selectedName ? {
-        id: selectedName.id,
-        value: selectedName.value
-      } : null
-    });
-
-  } catch (error) {
-    console.error('Error in castVote controller:', error);
     return res.status(500).json({
       error: 'Internal server error',
       message: error.message
@@ -1203,29 +1005,152 @@ const proceedToNextRound = async (req, res) => {
       return res.status(400).json({ error: 'No matchups found for the current round' });
     }
 
-    const anyVotes = matchups.some(m => {
-      const { name1Votes = 0, name2Votes = 0 } = m.votes || {};
-      return (name1Votes + name2Votes) > 0;
-    });
-    if (!anyVotes) {
-      return res.status(400).json({ error: 'No votes have been cast in the current round' });
-    }
-
-    // Auto-set winnerId for every matchup: vote-leader wins; name1Id wins ties (deterministic)
-    for (const matchup of matchups) {
-      const { name1Votes = 0, name2Votes = 0 } = matchup.votes || {};
-      matchup.winnerId = (name2Votes > name1Votes) ? matchup.name2Id : matchup.name1Id;
+    const allHaveWinners = matchups.every(m => m.winnerId);
+    if (!allHaveWinners) {
+      return res.status(400).json({ error: 'All matchups must have a winner set before advancing' });
     }
 
     advanceMatchupWinners(bracket, currentRoundKey);
 
     await bracket.save();
 
+    await fanOutScores(bracket._id, currentRoundKey, bracket.matchups[currentRoundKey]);
+
     return res.status(200).json({ advanced: true, bracket: buildCurrentBracketResponse(bracket) });
 
   } catch (error) {
     console.error('Error in proceedToNextRound:', error);
     return res.status(500).json({ error: 'Failed to proceed to next round', message: error.message });
+  }
+};
+
+const VALID_ROUNDS = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+const ROUND_SIZES  = { roundOf32: 16, roundOf16: 8, elite8: 4, final4: 2, championship: 1 };
+
+const defaultPicks = () => ({
+  roundOf32:    Array(16).fill(null),
+  roundOf16:    Array(8).fill(null),
+  elite8:       Array(4).fill(null),
+  final4:       Array(2).fill(null),
+  championship: Array(1).fill(null),
+});
+
+/**
+ * GET /api/bracket/:id/my-bracket
+ * Fetch or initialize the caller's UserBracket for a given bracket.
+ * Query param: userId (the voterId string)
+ */
+const getMyBracket = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query param is required' });
+    }
+
+    let userBracket = await UserBracket.findOne({ bracketId, userId });
+
+    if (!userBracket) {
+      return res.status(200).json({
+        bracketId,
+        userId,
+        picks: defaultPicks(),
+        score: 0,
+        lockedAt: null,
+      });
+    }
+
+    return res.status(200).json(userBracket);
+  } catch (error) {
+    console.error('Error in getMyBracket controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/:id/my-bracket/pick
+ * Upsert a single pick for the caller's UserBracket.
+ * Body: { userId, round, position, selectedNameId }
+ */
+const submitPick = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const { userId, round, position, selectedNameId } = req.body;
+
+    if (!userId || !round || position === undefined || !selectedNameId) {
+      return res.status(400).json({ error: 'userId, round, position, and selectedNameId are required' });
+    }
+
+    if (!VALID_ROUNDS.includes(round)) {
+      return res.status(400).json({ error: `round must be one of: ${VALID_ROUNDS.join(', ')}` });
+    }
+
+    const roundSize = ROUND_SIZES[round];
+    if (typeof position !== 'number' || position < 0 || position >= roundSize) {
+      return res.status(400).json({ error: `position must be between 0 and ${roundSize - 1} for round ${round}` });
+    }
+
+    let userBracket = await UserBracket.findOneAndUpdate(
+      { bracketId, userId },
+      { $setOnInsert: { picks: defaultPicks(), score: 0, lockedAt: null } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    if (userBracket.lockedAt) {
+      return res.status(400).json({ error: 'Bracket is locked' });
+    }
+
+    userBracket.picks[round][position] = selectedNameId;
+    userBracket.markModified('picks');
+    await userBracket.save();
+
+    return res.status(200).json(userBracket);
+  } catch (error) {
+    console.error('Error in submitPick controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/:id/my-bracket/lock
+ * Lock the caller's UserBracket. Requires all 31 pick slots to be non-null.
+ * Body: { userId }
+ */
+const lockMyBracket = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const userBracket = await UserBracket.findOne({ bracketId, userId });
+    if (!userBracket) {
+      return res.status(404).json({ error: 'UserBracket not found' });
+    }
+
+    if (userBracket.lockedAt) {
+      return res.status(400).json({ error: 'Already locked' });
+    }
+
+    const allFilled = Object.values(userBracket.picks.toObject
+      ? userBracket.picks.toObject()
+      : userBracket.picks
+    ).flat().every(p => p !== null);
+
+    if (!allFilled) {
+      return res.status(400).json({ error: 'All 31 pick slots must be filled before locking' });
+    }
+
+    userBracket.lockedAt = new Date();
+    await userBracket.save();
+
+    return res.status(200).json(userBracket);
+  } catch (error) {
+    console.error('Error in lockMyBracket controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 };
 
@@ -1407,74 +1332,6 @@ const resetRound = async (req, res) => {
   }
 };
 
-/**
- * GET /api/votes/user/:voterId
- * Return all matchup IDs the given voter has already voted on.
- * Used by the frontend to disable vote buttons on page load.
- *
- * Response: { voterId, votedMatchupIds: string[] }
- */
-const getUserVotes = async (req, res) => {
-  try {
-    const { voterId } = req.params;
-    if (!voterId) return res.status(400).json({ error: 'voterId is required' });
-
-    const bracket = await Bracket.findOne({ status: { $in: ['active', 'completed'] } }).sort({ createdAt: -1 });
-    if (!bracket) return res.status(200).json({ voterId, votedMatchupIds: [], voteMap: {}, lockedRounds: [] });
-
-    const userVotes = bracket.votes.filter(v => v.voterId === voterId);
-
-    // Map of matchupId → selectedNameId
-    const voteMap = {};
-    userVotes.forEach(v => { voteMap[v.matchupId] = v.selectedNameId; });
-
-    // Rounds this guest has locked in
-    const lockedRounds = bracket.guestLockIns
-      .filter(li => li.voterId === voterId)
-      .map(li => li.round);
-
-    return res.status(200).json({
-      voterId,
-      votedMatchupIds: userVotes.map(v => v.matchupId),
-      voteMap,
-      lockedRounds
-    });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to get user votes' });
-  }
-};
-
-// POST /api/bracket/guest-lock-in
-// Body: { voterId, round }
-// Marks the guest as locked in for that round. Cannot lock in twice for the same round.
-const guestLockIn = async (req, res) => {
-  try {
-    const { voterId, round } = req.body;
-    if (!voterId || !round) {
-      return res.status(400).json({ error: 'voterId and round are required' });
-    }
-
-    const bracketId = req.query.bracketId || req.body.bracketId;
-    const bracket = await findBracket(bracketId);
-    if (!bracket) return res.status(404).json({ error: 'No active bracket found' });
-
-    // Prevent duplicate lock-in for same round
-    const alreadyLocked = bracket.guestLockIns.some(li => li.voterId === voterId && li.round === round);
-    if (alreadyLocked) {
-      const lockedRounds = bracket.guestLockIns.filter(li => li.voterId === voterId).map(li => li.round);
-      return res.status(200).json({ success: true, alreadyLocked: true, lockedRounds });
-    }
-
-    bracket.guestLockIns.push({ voterId, round, lockedAt: new Date() });
-    await bracket.save();
-
-    const lockedRounds = bracket.guestLockIns.filter(li => li.voterId === voterId).map(li => li.round);
-    return res.status(201).json({ success: true, lockedRounds });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to lock in guest picks' });
-  }
-};
-
 // POST /api/admin/set-winner
 // Body: { matchupId, winnerId }
 const setMatchupWinner = async (req, res) => {
@@ -1532,7 +1389,7 @@ const publishRound = async (req, res) => {
 };
 
 // POST /api/admin/reset-and-regenerate
-// Clears all matchups, votes, guestLockIns, publishedRounds, and championNameId,
+// Clears all matchups, publishedRounds, and championNameId,
 // resets status to 'draft', then immediately regenerates roundOf32 with the current
 // seeding algorithm if 32 names are present. Names are preserved through both steps.
 const resetAndRegenerate = async (req, res) => {
@@ -1546,8 +1403,6 @@ const resetAndRegenerate = async (req, res) => {
     bracket.matchups.elite8       = [];
     bracket.matchups.final4       = [];
     bracket.matchups.championship = [];
-    bracket.votes          = [];
-    bracket.guestLockIns   = [];
     bracket.publishedRounds = [];
     bracket.championNameId = null;
     bracket.status         = 'draft';
@@ -1590,7 +1445,7 @@ const resetAndRegenerate = async (req, res) => {
 };
 
 // POST /api/admin/unlock-names
-// Clears all matchups, votes, guestLockIns, publishedRounds, and championNameId,
+// Clears all matchups, publishedRounds, and championNameId,
 // resets status to 'draft' and currentRound to 'Round of 32'.
 // Names (owner1Names, owner2Names, sharedNames) are preserved.
 // Returns 400 if bracket is already in draft status.
@@ -1610,8 +1465,6 @@ const unlockNames = async (req, res) => {
     bracket.matchups.elite8       = [];
     bracket.matchups.final4       = [];
     bracket.matchups.championship = [];
-    bracket.votes          = [];
-    bracket.guestLockIns   = [];
     bracket.publishedRounds = [];
     bracket.championNameId = null;
     bracket.status         = 'draft';
@@ -1641,21 +1494,8 @@ const unlockNames = async (req, res) => {
  */
 const getOwnerPicks = async (req, res) => {
   try {
-    const bracketId = req.query.bracketId || req.body.bracketId;
-    const bracket = await findBracket(bracketId);
-    const ownerPicks = {};
-
-    bracket.votes
-      .filter(v => v.role === 'Owner 1' || v.role === 'Owner 2')
-      .forEach(v => {
-        if (!ownerPicks[v.matchupId]) {
-          ownerPicks[v.matchupId] = { owner1NameId: null, owner2NameId: null };
-        }
-        if (v.role === 'Owner 1') ownerPicks[v.matchupId].owner1NameId = v.selectedNameId;
-        if (v.role === 'Owner 2') ownerPicks[v.matchupId].owner2NameId = v.selectedNameId;
-      });
-
-    return res.status(200).json({ ownerPicks });
+    // Owner picks are now derived from UserBracket documents (owner role support is a future extension).
+    return res.status(200).json({ ownerPicks: {} });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to fetch owner picks' });
   }
@@ -1779,14 +1619,9 @@ const deleteGuestSession = async (req, res) => {
     if (!guestId) return res.status(400).json({ error: 'guestId is required' });
     const bracket = await Bracket.findById(sessionId);
     if (!bracket) return res.status(404).json({ error: 'Guest session not found' });
-    // Remove all votes by this guest
-    const before = bracket.votes.length;
-    bracket.votes = bracket.votes.filter(v => v.voterId !== guestId);
-    // Remove guest lock-in entries for this guest
-    bracket.guestLockIns = bracket.guestLockIns.filter(li => li.voterId !== guestId);
-    await bracket.save();
-    const votesRemoved = before - bracket.votes.length;
-    return res.status(200).json({ removed: true, votesRemoved });
+    // Remove UserBracket for this guest
+    const result = await UserBracket.deleteOne({ bracketId: sessionId, userId: guestId });
+    return res.status(200).json({ removed: true, userBracketDeleted: result.deletedCount > 0 });
   } catch (error) {
     console.error('Error in deleteGuestSession controller:', error);
     return res.status(500).json({ error: 'Internal server error', message: error.message });
@@ -1812,14 +1647,12 @@ const removeOwner2 = async (req, res) => {
       return n;
     });
 
-    // 4. Clear all matchup rounds and votes, reset bracket state
+    // 4. Clear all matchup rounds, reset bracket state
     bracket.matchups.roundOf32 = [];
     bracket.matchups.roundOf16 = [];
     bracket.matchups.elite8 = [];
     bracket.matchups.final4 = [];
     bracket.matchups.championship = [];
-    bracket.votes = [];
-    bracket.guestLockIns = [];
     bracket.publishedRounds = [];
     bracket.championNameId = null;
     bracket.status = 'draft';
@@ -1847,12 +1680,9 @@ module.exports = {
   resetBracket,
   lockBracket,
   lockInOwner,
-  castVote,
-  getUserVotes,
   advanceRound,
   resetRound,
   getOwnerPicks,
-  guestLockIn,
   setMatchupWinner,
   publishRound,
   resetAndRegenerate,
@@ -1863,5 +1693,8 @@ module.exports = {
   deleteBracket,
   deleteGuestSession,
   removeOwner2,
-  proceedToNextRound
+  proceedToNextRound,
+  getMyBracket,
+  submitPick,
+  lockMyBracket
 };

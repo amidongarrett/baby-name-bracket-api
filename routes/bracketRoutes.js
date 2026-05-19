@@ -17,12 +17,9 @@ const {
   resetBracket,
   lockBracket,
   lockInOwner,
-  castVote,
-  getUserVotes,
   advanceRound,
   resetRound,
   getOwnerPicks,
-  guestLockIn,
   setMatchupWinner,
   publishRound,
   resetAndRegenerate,
@@ -33,7 +30,10 @@ const {
   deleteBracket,
   deleteGuestSession,
   removeOwner2,
-  proceedToNextRound
+  proceedToNextRound,
+  getMyBracket,
+  submitPick,
+  lockMyBracket
 } = require('../controllers/bracketController');
 const { requireAuth } = require('../middleware/auth');
 
@@ -108,6 +108,10 @@ router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
  */
 router.post('/bracket/:id/invite', requireAuth, sendInvites);
 router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
+
+router.get('/bracket/:id/my-bracket',       requireAuth, getMyBracket);
+router.post('/bracket/:id/my-bracket/pick', requireAuth, submitPick);
+router.post('/bracket/:id/my-bracket/lock', requireAuth, lockMyBracket);
 
 /**
  * GET /api/bracket/:sessionId
@@ -190,7 +194,6 @@ router.post('/bracket/generate', generateBracket);
 router.post('/bracket/reset', resetBracket);
 router.post('/bracket/lock', lockBracket);
 router.post('/bracket/lock-in', lockInOwner);
-router.post('/bracket/guest-lock-in', guestLockIn);
 router.post('/admin/set-winner', setMatchupWinner);
 router.post('/admin/publish-round', publishRound);
 router.post('/admin/reset-and-regenerate', resetAndRegenerate);
@@ -232,40 +235,5 @@ router.post('/bracket/advance', advanceRound);
  *   500: Server error
  */
 router.post('/bracket/reset-round', resetRound);
-
-/**
- * POST /api/votes/:matchupId
- * Cast a vote for a specific matchup
- *
- * Path Parameters:
- * - matchupId: UUID of the matchup
- *
- * Request Body:
- * {
- *   voterId: string (guest user identifier),
- *   selectedNameId: string (UUID of the chosen name)
- * }
- *
- * Business Rules:
- * - Prevents duplicate votes: same voterId cannot vote twice on the same matchupId
- * - Increments the vote tally for the selected name
- * - Stores vote metadata in the votes array
- *
- * Response:
- * - 201: Vote cast successfully with updated matchup data
- * - 400: Validation error or duplicate vote attempt
- * - 404: Matchup not found
- * - 500: Server error
- */
-router.post('/votes/:matchupId', castVote);
-
-/**
- * GET /api/votes/user/:voterId
- * Return all matchup IDs a specific voter has already voted on.
- * The frontend uses this on page load to disable already-voted buttons.
- *
- * Response: { voterId, votedMatchupIds: string[] }
- */
-router.get('/votes/user/:voterId', getUserVotes);
 
 module.exports = router;
