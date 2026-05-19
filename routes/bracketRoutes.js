@@ -29,7 +29,10 @@ const {
   unlockNames,
   getNamesByGender,
   getInviteLink,
-  sendInvites
+  sendInvites,
+  deleteBracket,
+  deleteGuestSession,
+  removeOwner2
 } = require('../controllers/bracketController');
 const { requireAuth } = require('../middleware/auth');
 
@@ -134,6 +137,11 @@ router.get('/bracket/:sessionId', getBracket);
 router.delete('/names/:nameId', deleteName);
 router.delete('/shared-names/:id', removeSharedName);
 router.delete('/pending-names/:id', removePendingName);
+
+// More-specific sub-paths must be registered before the bare /:sessionId wildcard
+router.delete('/bracket/:sessionId/guest', deleteGuestSession);
+router.delete('/bracket/:sessionId/owner2', requireAuth, removeOwner2);
+router.delete('/bracket/:sessionId', requireAuth, deleteBracket);
 
 /**
  * POST /api/bracket/generate

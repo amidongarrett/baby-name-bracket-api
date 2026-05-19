@@ -1693,6 +1693,83 @@ const sendInvites = async (req, res) => {
   }
 };
 
+const deleteBracket = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const bracket = await Bracket.findById(sessionId);
+    if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
+    const bracketId = bracket._id.toString();
+    await Bracket.deleteOne({ _id: sessionId });
+    return res.status(200).json({ deleted: true, bracketId });
+  } catch (error) {
+    console.error('Error in deleteBracket controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+const deleteGuestSession = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { guestId } = req.body;
+    if (!guestId) return res.status(400).json({ error: 'guestId is required' });
+    const bracket = await Bracket.findById(sessionId);
+    if (!bracket) return res.status(404).json({ error: 'Guest session not found' });
+    // Remove all votes by this guest
+    const before = bracket.votes.length;
+    bracket.votes = bracket.votes.filter(v => v.voterId !== guestId);
+    // Remove guest lock-in entries for this guest
+    bracket.guestLockIns = bracket.guestLockIns.filter(li => li.voterId !== guestId);
+    await bracket.save();
+    const votesRemoved = before - bracket.votes.length;
+    return res.status(200).json({ removed: true, votesRemoved });
+  } catch (error) {
+    console.error('Error in deleteGuestSession controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+const removeOwner2 = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const bracket = await Bracket.findById(sessionId);
+    if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
+
+    // 1. Clear owner2Names entirely
+    bracket.owner2Names = [];
+    bracket.owner2PendingNames = [];
+
+    // 2. Remove sharedNames entries where submittedBy === 'Owner 2'
+    bracket.sharedNames = bracket.sharedNames.filter(n => n.submittedBy !== 'Owner 2');
+
+    // 3. Clear isShared flags on all owner1Names (no partner list = no duplicates)
+    bracket.owner1Names = bracket.owner1Names.map(n => {
+      n.isShared = false;
+      return n;
+    });
+
+    // 4. Clear all matchup rounds and votes, reset bracket state
+    bracket.matchups.roundOf32 = [];
+    bracket.matchups.roundOf16 = [];
+    bracket.matchups.elite8 = [];
+    bracket.matchups.final4 = [];
+    bracket.matchups.championship = [];
+    bracket.votes = [];
+    bracket.guestLockIns = [];
+    bracket.publishedRounds = [];
+    bracket.championNameId = null;
+    bracket.status = 'draft';
+    bracket.currentRound = 'Round of 32';
+    bracket.owner1LockedIn = false;
+    bracket.owner2LockedIn = false;
+
+    await bracket.save();
+    return res.status(200).json({ reset: true, bracket: buildCurrentBracketResponse(bracket) });
+  } catch (error) {
+    console.error('Error in removeOwner2 controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   getBracket,
@@ -1717,5 +1794,8 @@ module.exports = {
   unlockNames,
   getNamesByGender,
   getInviteLink,
-  sendInvites
+  sendInvites,
+  deleteBracket,
+  deleteGuestSession,
+  removeOwner2
 };
