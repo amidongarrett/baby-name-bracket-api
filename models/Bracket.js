@@ -247,6 +247,7 @@ const BracketSchema = new mongoose.Schema({
 
   // Multi-bracket lobby identity fields
   inviteCode:   { type: String, unique: true, sparse: true },
+  shareToken:   { type: String, default: null },
   owner1UserId: { type: String, default: null },
   owner1Name:   { type: String, default: '' },
   owner2UserId: { type: String, default: null },
@@ -362,6 +363,7 @@ BracketSchema.index({ 'votes.voterId': 1 });
 BracketSchema.index({ 'owner1PendingNames.id': 1 });
 BracketSchema.index({ 'owner2PendingNames.id': 1 });
 BracketSchema.index({ inviteCode: 1 });
+BracketSchema.index({ shareToken: 1 });
 BracketSchema.index({ owner1UserId: 1 });
 BracketSchema.index({ owner2UserId: 1 });
 BracketSchema.index({ guestUserIds: 1 });

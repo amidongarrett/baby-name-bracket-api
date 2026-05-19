@@ -21,18 +21,21 @@ const app = express();
 // Environment configuration
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-// CORS configuration - Allow requests from frontend
+// CORS: read comma-separated allowed origins from env, supplement with localhost in dev
+const productionOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+const devOrigins = NODE_ENV !== 'production'
+  ? ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000']
+  : [];
+
+const allowedOrigins = [...new Set([...productionOrigins, ...devOrigins])];
+
 const corsOptions = {
   origin: function (origin, callback) {
-    const allowedOrigins = [
-      'http://localhost:3000',      // Next.js dev server
-      'http://localhost:3001',      // Backend itself (for testing)
-      'http://127.0.0.1:3000',      // Alternative localhost
-      FRONTEND_URL                  // Configurable frontend URL
-    ];
-    
     // Allow requests with no origin (mobile apps, Postman, curl)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -40,11 +43,11 @@ const corsOptions = {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true,              // Allow cookies if needed
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   exposedHeaders: ['X-Total-Count'],
-  maxAge: 600                     // Cache preflight for 10 minutes
+  maxAge: 600
 };
 
 // Middleware
@@ -143,8 +146,8 @@ app.listen(PORT, () => {
   console.log(`📍 Environment: ${NODE_ENV}`);
   console.log(`🌐 Server URL: http://localhost:${PORT}`);
   console.log(`🎯 Health Check: http://localhost:${PORT}/health`);
-  console.log(`🔗 Frontend URL: ${FRONTEND_URL}`);
-  console.log(`✅ CORS Enabled for Port 3000`);
+  console.log(`🔗 Allowed Origins: ${allowedOrigins.join(', ') || '(none configured)'}`);
+  console.log(`✅ CORS Enabled`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
 

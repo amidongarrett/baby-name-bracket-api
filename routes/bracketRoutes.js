@@ -27,8 +27,11 @@ const {
   publishRound,
   resetAndRegenerate,
   unlockNames,
-  getNamesByGender
+  getNamesByGender,
+  getInviteLink,
+  sendInvites
 } = require('../controllers/bracketController');
+const { requireAuth } = require('../middleware/auth');
 
 /**
  * POST /api/names
@@ -85,6 +88,21 @@ router.get('/bracket/owner-picks', getOwnerPicks);
  * Does NOT save matchups to the database (read-only preview).
  */
 router.get('/bracket/preview', getPreviewMatchups);
+
+/**
+ * GET /api/bracket/:id/invite-link
+ * Returns a stable shareable link for the bracket (lazily creates shareToken).
+ * Requires Bearer JWT; owner only.
+ */
+router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
+
+/**
+ * POST /api/bracket/:id/invite
+ * Sends invitation emails to the provided list of addresses.
+ * Body: { emails: string[] }
+ * Requires Bearer JWT; owner only.
+ */
+router.post('/bracket/:id/invite', requireAuth, sendInvites);
 
 /**
  * GET /api/bracket/:sessionId

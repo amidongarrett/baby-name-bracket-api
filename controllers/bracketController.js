@@ -3,6 +3,7 @@ const BabyName = require('../models/BabyName');
 const { v4: uuidv4 } = require('uuid');
 const { generateDivisionMatchups, generateAllRoundStubs } = require('../utils/seedingAlgorithm');
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
+const { sendBracketInviteEmail } = require('../utils/email');
 
 /**
  * Helper function to normalize name strings for case-insensitive comparison
@@ -217,8 +218,7 @@ const addName = async (req, res) => {
       
       if (totalNames === 32) {
         // Exactly 32 names: generate preview matchups
-        const allNames = bracket.getAllNames();
-        bracket.previewMatchups = generateRoundOf32Matchups(allNames);
+        bracket.previewMatchups = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
       } else {
         // Less than 32 names: clear preview matchups
         bracket.previewMatchups = [];
@@ -1616,6 +1616,83 @@ const getNamesByGender = async (req, res) => {
   return res.json({ names: names.map(n => ({ id: n.id, name: n.name, gender: n.gender })) });
 };
 
+/**
+ * GET /api/bracket/:id/invite-link
+ * Returns a stable shareable link for the bracket.
+ * Lazily generates shareToken on first call if not yet set.
+ * Requires auth; only the bracket owner (owner1 or owner2) may access.
+ */
+const getInviteLink = async (req, res) => {
+  try {
+    const bracket = await findBracket(req.params.id);
+
+    const isOwner =
+      bracket.owner1UserId === req.userId ||
+      bracket.owner2UserId === req.userId;
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden: you are not an owner of this bracket' });
+    }
+
+    if (!bracket.shareToken) {
+      bracket.shareToken = uuidv4();
+      await bracket.save();
+    }
+
+    const APP_URL = process.env.APP_URL || 'http://localhost:3000';
+    const shareLink = `${APP_URL}/bracket/${bracket._id}?share=${bracket.shareToken}`;
+
+    return res.status(200).json({ shareLink });
+  } catch (error) {
+    console.error('Error in getInviteLink controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/:id/invite
+ * Sends invitation emails to the provided list of addresses.
+ * Lazily generates shareToken on first call if not yet set.
+ * Requires auth; only the bracket owner (owner1 or owner2) may access.
+ *
+ * Body: { emails: string[] }
+ * Response: { invited: number, shareLink: string }
+ */
+const sendInvites = async (req, res) => {
+  try {
+    const { emails } = req.body;
+
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ error: 'emails must be a non-empty array' });
+    }
+
+    const bracket = await findBracket(req.params.id);
+
+    const isOwner =
+      bracket.owner1UserId === req.userId ||
+      bracket.owner2UserId === req.userId;
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden: you are not an owner of this bracket' });
+    }
+
+    if (!bracket.shareToken) {
+      bracket.shareToken = uuidv4();
+      await bracket.save();
+    }
+
+    const APP_URL = process.env.APP_URL || 'http://localhost:3000';
+    const shareLink = `${APP_URL}/bracket/${bracket._id}?share=${bracket.shareToken}`;
+
+    await Promise.all(
+      emails.map(email => sendBracketInviteEmail(email, shareLink, bracket.name))
+    );
+
+    return res.status(200).json({ invited: emails.length, shareLink });
+  } catch (error) {
+    console.error('Error in sendInvites controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   getBracket,
@@ -1638,5 +1715,7 @@ module.exports = {
   publishRound,
   resetAndRegenerate,
   unlockNames,
-  getNamesByGender
+  getNamesByGender,
+  getInviteLink,
+  sendInvites
 };

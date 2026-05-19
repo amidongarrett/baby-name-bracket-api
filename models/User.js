@@ -18,7 +18,8 @@ const userSchema = new mongoose.Schema(
     },
     displayName: {
       type: String,
-      default: null,
+      required: true,
+      trim: true,
     },
     createdAt: {
       type: Date,

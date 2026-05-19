@@ -74,4 +74,41 @@ async function sendInviteEmail(toEmail, inviteCode) {
   });
 }
 
-module.exports = { sendOtpEmail, sendInviteEmail };
+/**
+ * Send a bracket guest invite email containing a shareable link.
+ * In development (no SMTP env vars), logs the link to stdout instead.
+ *
+ * @param {string} toEmail
+ * @param {string} shareLink
+ * @param {string} bracketName
+ */
+async function sendBracketInviteEmail(toEmail, shareLink, bracketName) {
+  const SMTP_HOST = process.env.SMTP_HOST;
+  const SMTP_PORT = process.env.SMTP_PORT;
+  const SMTP_USER = process.env.SMTP_USER;
+  const SMTP_PASS = process.env.SMTP_PASS;
+  const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@babynames.local';
+
+  const hasSmtp = SMTP_HOST && SMTP_USER && SMTP_PASS;
+
+  if (!hasSmtp) {
+    console.log(`[DEV] Bracket invite for ${toEmail} (${bracketName}): ${shareLink}`);
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: parseInt(SMTP_PORT || '587', 10),
+    secure: parseInt(SMTP_PORT || '587', 10) === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+
+  await transporter.sendMail({
+    from: EMAIL_FROM,
+    to: toEmail,
+    subject: "You've been invited to vote on a Baby Name Bracket",
+    text: `You've been invited to vote on "${bracketName}"!\n\nClick the link below to view the bracket and cast your votes:\n${shareLink}\n\nIf you did not expect this invitation, you can safely ignore this email.`,
+  });
+}
+
+module.exports = { sendOtpEmail, sendInviteEmail, sendBracketInviteEmail };
