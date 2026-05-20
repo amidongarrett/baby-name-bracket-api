@@ -202,4 +202,48 @@ async function acceptOwner2(req, res) {
   });
 }
 
-module.exports = { createBracket, listMyBrackets, joinBracket, acceptOwner2 };
+/**
+ * POST /api/brackets/:id/invite-owner2
+ * Re-send (or send for the first time after creation) the Owner 2 partner invite.
+ * Only Owner 1 may call this; returns 409 if Owner 2 has already joined.
+ */
+async function resendOwner2Invite(req, res) {
+  const { id } = req.params;
+  const { email } = req.body;
+
+  const bracket = await Bracket.findById(id);
+  if (!bracket) {
+    return res.status(404).json({ error: 'Bracket not found' });
+  }
+
+  // Auth guard — Owner 1 only
+  if (req.userId !== bracket.owner1UserId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  // Conflict guard — Owner 2 already claimed their seat
+  if (bracket.owner2UserId) {
+    return res.status(409).json({ error: 'Owner 2 has already joined' });
+  }
+
+  // Email validation — same regex used in createBracket
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!email || !emailRegex.test(email)) {
+    return res.status(400).json({ error: 'A valid email is required' });
+  }
+
+  // Ensure there is an invite code (edge case: bracket predates the field)
+  if (!bracket.inviteCode) {
+    bracket.inviteCode = generateInviteCode();
+  }
+
+  bracket.owner2Email = email.trim();
+  await bracket.save();
+
+  // Fire-and-forget — do not block the response on email delivery
+  sendInviteEmail(email.trim(), bracket.inviteCode).catch(console.error);
+
+  return res.status(200).json({ sent: true, inviteCode: bracket.inviteCode });
+}
+
+module.exports = { createBracket, listMyBrackets, joinBracket, acceptOwner2, resendOwner2Invite };
