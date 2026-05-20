@@ -128,11 +128,58 @@ async function listMyBrackets(req, res) {
 /**
  * POST /api/brackets/join
  * Join an existing bracket as a guest via invite code.
+ * Test users (test+*@amidonlabs.com) may bypass the invite code by supplying
+ * a bracketId instead, but only for brackets with status 'active'.
  */
 async function joinBracket(req, res) {
-  const { inviteCode } = req.body;
+  const { inviteCode, bracketId } = req.body;
 
+  const userId = req.userId;
+  const user = await User.findOne({ id: userId }, 'email').lean();
+  const isTestUser = TEST_EMAIL_RE.test(user?.email);
+
+  // Test-user bypass path: bracketId provided without an inviteCode
+  if (isTestUser && bracketId && !inviteCode) {
+    if (typeof bracketId !== 'string' || !bracketId.trim()) {
+      return res.status(400).json({ error: 'bracketId is required for test user join' });
+    }
+
+    const bracket = await Bracket.findById(bracketId.trim());
+    if (!bracket) {
+      return res.status(404).json({ error: 'Bracket not found' });
+    }
+
+    if (bracket.status !== 'active') {
+      return res.status(403).json({ error: 'Test user bypass only available for active brackets' });
+    }
+
+    if (bracket.owner1UserId === userId || bracket.owner2UserId === userId) {
+      return res.status(400).json({ error: 'You are already an owner of this bracket' });
+    }
+
+    if (bracket.guestUserIds.includes(userId)) {
+      return res.status(400).json({ error: 'Already joined' });
+    }
+
+    bracket.guestUserIds.push(userId);
+    await bracket.save();
+
+    return res.status(200).json({
+      bracket: {
+        id: bracket._id,
+        inviteCode: bracket.inviteCode,
+        owner1Name: bracket.owner1Name,
+        owner2Name: bracket.owner2Name,
+        status: bracket.status
+      }
+    });
+  }
+
+  // Standard invite-code path
   if (!inviteCode || typeof inviteCode !== 'string' || !inviteCode.trim()) {
+    if (isTestUser && !bracketId) {
+      return res.status(400).json({ error: 'bracketId is required for test user join' });
+    }
     return res.status(400).json({ error: 'inviteCode is required' });
   }
 
@@ -140,8 +187,6 @@ async function joinBracket(req, res) {
   if (!bracket) {
     return res.status(404).json({ error: 'Invalid invite code' });
   }
-
-  const userId = req.userId;
 
   if (bracket.owner1UserId === userId || bracket.owner2UserId === userId) {
     return res.status(400).json({ error: 'You are already an owner of this bracket' });

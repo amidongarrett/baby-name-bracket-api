@@ -25,6 +25,11 @@ const NameSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  status: {
+    type: String,
+    enum: ['active', 'bank'],
+    default: 'active'
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -131,6 +136,16 @@ const BracketSchema = new mongoose.Schema({
     default: []
   },
   owner2PendingNames: {
+    type: [NameSchema],
+    default: []
+  },
+
+  // Name bank — unlimited extra names outside the active 16-slot pool
+  owner1BankNames: {
+    type: [NameSchema],
+    default: []
+  },
+  owner2BankNames: {
     type: [NameSchema],
     default: []
   },
@@ -300,11 +315,13 @@ BracketSchema.statics.findByStatus = function(status) {
 
 // Create indexes for performance
 BracketSchema.index({ status: 1, createdAt: -1 });
-BracketSchema.index({ 'owner1Names.id': 1 });
-BracketSchema.index({ 'owner2Names.id': 1 });
-BracketSchema.index({ 'sharedNames.id': 1 });
-BracketSchema.index({ 'owner1PendingNames.id': 1 });
-BracketSchema.index({ 'owner2PendingNames.id': 1 });
+BracketSchema.index({ 'owner1Names.id': 1 }, { sparse: true });
+BracketSchema.index({ 'owner2Names.id': 1 }, { sparse: true });
+BracketSchema.index({ 'sharedNames.id': 1 }, { sparse: true });
+BracketSchema.index({ 'owner1PendingNames.id': 1 }, { sparse: true });
+BracketSchema.index({ 'owner2PendingNames.id': 1 }, { sparse: true });
+BracketSchema.index({ 'owner1BankNames.id': 1 }, { sparse: true });
+BracketSchema.index({ 'owner2BankNames.id': 1 }, { sparse: true });
 BracketSchema.index({ inviteCode: 1 });
 BracketSchema.index({ shareToken: 1 });
 BracketSchema.index({ owner1UserId: 1 });

@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const {
   addName,
+  reorderNames,
   getBracket,
   getCurrentBracket,
   getPreviewMatchups,
@@ -37,7 +38,7 @@ const {
   resetMyBracket,
   getVoteTallies
 } = require('../controllers/bracketController');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, optionalAuth } = require('../middleware/auth');
 
 /**
  * POST /api/names
@@ -112,10 +113,17 @@ router.post('/bracket/:id/invite', requireAuth, sendInvites);
 router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
 router.get('/bracket/:id/vote-tallies', getVoteTallies);
 
-router.get('/bracket/:id/my-bracket',         getMyBracket);
-router.post('/bracket/:id/my-bracket/pick',   submitPick);
-router.post('/bracket/:id/my-bracket/lock',   lockMyBracket);
-router.post('/bracket/:id/my-bracket/reset',  resetMyBracket);
+router.get('/bracket/:id/my-bracket',         requireAuth, getMyBracket);
+router.post('/bracket/:id/my-bracket/pick',   requireAuth, submitPick);
+router.post('/bracket/:id/my-bracket/lock',   requireAuth, lockMyBracket);
+router.post('/bracket/:id/my-bracket/reset',  requireAuth, resetMyBracket);
+
+/**
+ * PATCH /api/brackets/:id/names/reorder
+ * Accept full replacement ordering for one owner (active + bank) and persist atomically.
+ * Requires auth so only the owning parent can reorder.
+ */
+router.patch('/brackets/:id/names/reorder', requireAuth, reorderNames);
 
 /**
  * GET /api/bracket/:sessionId

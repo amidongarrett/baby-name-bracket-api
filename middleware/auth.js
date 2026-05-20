@@ -21,4 +21,22 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { requireAuth };
+/**
+ * Express middleware that optionally extracts a Bearer JWT.
+ * If a valid token is present, sets req.userId from the token's `sub` claim.
+ * If the header is absent or the token is invalid, calls next() without setting req.userId.
+ * Allows unauthenticated guest callers to proceed while still identifying owners.
+ */
+function optionalAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    try {
+      const payload = verifyToken(token);
+      req.userId = payload.sub;
+    } catch { /* invalid token — treat as unauthenticated */ }
+  }
+  next();
+}
+
+module.exports = { requireAuth, optionalAuth };

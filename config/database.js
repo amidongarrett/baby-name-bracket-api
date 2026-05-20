@@ -11,6 +11,34 @@ const mongoose = require('mongoose');
 let isConnected = false;
 
 /**
+ * Drop stale unique indexes on array-path fields left over from a previous
+ * schema version. MongoDB never removes an existing index when the Mongoose
+ * schema changes, so we do it explicitly on every startup. Each drop is
+ * silently skipped if the index no longer exists (error code 27 = IndexNotFound).
+ * @param {import('mongodb').Db} db
+ */
+async function repairIndexes(db) {
+  const col = db.collection('brackets');
+  const staleIndexes = [
+    'sharedNames.id_1',
+    'owner1Names.id_1',
+    'owner2Names.id_1',
+    'owner1PendingNames.id_1',
+    'owner2PendingNames.id_1',
+    'owner1BankNames.id_1',
+    'owner2BankNames.id_1',
+  ];
+  for (const name of staleIndexes) {
+    try {
+      await col.dropIndex(name);
+      console.log(`Dropped stale index: ${name}`);
+    } catch (e) {
+      if (e.code !== 27) console.warn(`Could not drop ${name}:`, e.message);
+    }
+  }
+}
+
+/**
  * Connect to MongoDB using environment configuration
  * @returns {Promise<void>}
  */
@@ -42,7 +70,11 @@ const connectDB = async () => {
     const conn = await mongoose.connect(MONGODB_URI, options);
 
     isConnected = true;
-    
+
+    // Drop any stale unique indexes from previous schema versions before
+    // Mongoose syncs the current (non-unique) index definitions.
+    await repairIndexes(conn.connection.db);
+
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log(`📊 MongoDB Connected: ${conn.connection.host}`);
     console.log(`📦 Database: ${conn.connection.name}`);

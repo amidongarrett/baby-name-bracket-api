@@ -94,6 +94,19 @@ const getOrCreateBracket = async () => {
 };
 
 /**
+ * Resolve which owner a set of name IDs belongs to.
+ * Returns 'Owner 1', 'Owner 2', or null (mixed / not found).
+ */
+const resolveOwnerFromIds = (bracket, ids) => {
+  const idSet = new Set(ids);
+  const inOwner1 = [...bracket.owner1Names, ...bracket.owner1BankNames].some(n => idSet.has(n.id));
+  const inOwner2 = [...bracket.owner2Names, ...bracket.owner2BankNames].some(n => idSet.has(n.id));
+  if (inOwner1 && !inOwner2) return 'Owner 1';
+  if (inOwner2 && !inOwner1) return 'Owner 2';
+  return null; // mixed or not found
+};
+
+/**
  * Helper function to find a bracket by ID, or fall back to getOrCreateBracket.
  */
 const findBracket = async (bracketId) => {
@@ -252,13 +265,27 @@ const addName = async (req, res) => {
       });
     }
 
-    // No duplicate found - add to current owner's list
-    // Check owner's individual submission limit (16 names)
+    // No duplicate found — if owner already has 16 active names, send to bank instead of erroring
     if (currentOwnerList.length >= 16) {
-      return res.status(400).json({
-        error: `${owner} has reached the maximum submission limit of 16 names`,
-        currentCount: currentOwnerList.length,
-        maxLimit: 16
+      const bankKey = owner === 'Owner 1' ? 'owner1BankNames' : 'owner2BankNames';
+      const bankName = {
+        id: uuidv4(),
+        value: trimmedName,
+        submittedBy: owner,
+        isShared: false,
+        status: 'bank',
+        createdAt: new Date()
+      };
+      bracket[bankKey].push(bankName);
+      await bracket.save();
+      return res.status(201).json({
+        message: 'Name added to your Name Bank (active list is full)',
+        isBanked: true,
+        name: bankName,
+        bracket: {
+          owner1Count: bracket.owner1Names.length,
+          owner2Count: bracket.owner2Names.length
+        }
       });
     }
 
@@ -306,6 +333,71 @@ const addName = async (req, res) => {
       error: 'Internal server error',
       message: error.message
     });
+  }
+};
+
+/**
+ * PATCH /api/brackets/:id/names/reorder
+ * Accept a full replacement ordering (active + bank) for one owner and persist atomically.
+ * Body: { updates: Array<{ id: string, rank: number|null, status: 'active'|'bank' }> }
+ * Response: { success: true }
+ */
+const reorderNames = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { updates } = req.body;
+    // updates: Array<{ id: string, rank: number|null, status: 'active'|'bank' }>
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ error: 'updates array is required' });
+    }
+    const bracket = await findBracket(id);
+    if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
+
+    // Determine owner from the submitted IDs
+    const owner = resolveOwnerFromIds(bracket, updates.map(u => u.id));
+    if (!owner) return res.status(400).json({ error: 'Could not resolve owner from name IDs' });
+
+    const activeKey = owner === 'Owner 1' ? 'owner1Names'     : 'owner2Names';
+    const bankKey   = owner === 'Owner 1' ? 'owner1BankNames' : 'owner2BankNames';
+
+    // Build lookup map of all this owner's names (active + bank)
+    const allOwnerNames = [...bracket[activeKey], ...bracket[bankKey]];
+    const nameMap = Object.fromEntries(allOwnerNames.map(n => [n.id, n]));
+
+    // Validate all IDs belong to this owner
+    for (const u of updates) {
+      if (!nameMap[u.id]) return res.status(400).json({ error: `Unknown name id: ${u.id}` });
+    }
+
+    // Partition updates into active (sorted by rank asc) and bank
+    const activeUpdates = updates
+      .filter(u => u.status === 'active')
+      .sort((a, b) => a.rank - b.rank);
+    const bankUpdates = updates.filter(u => u.status === 'bank');
+
+    if (activeUpdates.length > 16) {
+      return res.status(400).json({ error: 'Cannot have more than 16 active names' });
+    }
+
+    // Reconstruct arrays preserving all name fields
+    bracket[activeKey] = activeUpdates.map(u => ({ ...nameMap[u.id].toObject(), status: 'active' }));
+    bracket[bankKey]   = bankUpdates.map(u  => ({ ...nameMap[u.id].toObject(), status: 'bank', rank: null }));
+
+    // Regenerate preview matchups if in draft mode and exactly 32 active names total
+    if (bracket.status === 'draft') {
+      const totalNames = bracket.getTotalNameCount();
+      if (totalNames === 32) {
+        bracket.previewMatchups = generateDivisionMatchups(bracket.owner1Names, bracket.owner2Names);
+      } else {
+        bracket.previewMatchups = [];
+      }
+    }
+
+    await bracket.save();
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error in reorderNames:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 };
 
@@ -388,6 +480,8 @@ const buildCurrentBracketResponse = (bracket) => {
     sharedNames: bracket.sharedNames,
     owner1PendingNames: bracket.owner1PendingNames,
     owner2PendingNames: bracket.owner2PendingNames,
+    owner1BankNames: bracket.owner1BankNames,
+    owner2BankNames: bracket.owner2BankNames,
     allNames: allNames,
 
     // Counts for UI display
@@ -1153,10 +1247,10 @@ const defaultPicks = () => ({
 const getMyBracket = async (req, res) => {
   try {
     const bracketId = req.params.id;
-    const { userId } = req.query;
+    const userId = req.userId;
 
     if (!userId) {
-      return res.status(400).json({ error: 'userId query param is required' });
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
     let userBracket = await UserBracket.findOne({ bracketId, userId });
@@ -1186,10 +1280,15 @@ const getMyBracket = async (req, res) => {
 const submitPick = async (req, res) => {
   try {
     const bracketId = req.params.id;
-    const { userId, round, position, selectedNameId } = req.body;
+    const { round, position, selectedNameId } = req.body;
+    const userId = req.userId;
 
-    if (!userId || !round || position === undefined || !selectedNameId) {
-      return res.status(400).json({ error: 'userId, round, position, and selectedNameId are required' });
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    if (!round || position === undefined || !selectedNameId) {
+      return res.status(400).json({ error: 'round, position, and selectedNameId are required' });
     }
 
     if (!VALID_ROUNDS.includes(round)) {
@@ -1232,10 +1331,10 @@ const submitPick = async (req, res) => {
 const lockMyBracket = async (req, res) => {
   try {
     const bracketId = req.params.id;
-    const { userId } = req.body;
+    const userId = req.userId;
 
     if (!userId) {
-      return res.status(400).json({ error: 'userId is required' });
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
     const userBracket = await UserBracket.findOne({ bracketId, userId });
@@ -1275,10 +1374,10 @@ const lockMyBracket = async (req, res) => {
 const resetMyBracket = async (req, res) => {
   try {
     const bracketId = req.params.id;
-    const { userId } = req.body;
+    const userId = req.userId;
 
     if (!userId) {
-      return res.status(400).json({ error: 'userId is required' });
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
     const userBracket = await UserBracket.findOne({ bracketId, userId });
@@ -1850,6 +1949,7 @@ const getVoteTallies = async (req, res) => {
 
 module.exports = {
   addName,
+  reorderNames,
   getBracket,
   getCurrentBracket,
   getPreviewMatchups,
