@@ -32,6 +32,40 @@ async function fanOutScores(bracketId, roundKey, completedMatchups) {
 }
 
 /**
+ * Aggregate locked UserBracket picks into per-matchup vote tallies.
+ * Returns a nested object: { [roundKey]: { [position]: { name1Votes, name2Votes } } }
+ */
+async function aggregateVoteTallies(bracketId, bracket) {
+  const userBrackets = await UserBracket.find({ bracketId, lockedAt: { $ne: null } });
+  const tallies = {};
+
+  const VALID_ROUNDS_AGG = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+
+  for (const roundKey of VALID_ROUNDS_AGG) {
+    const matchups = bracket.matchups[roundKey];
+    if (!matchups || matchups.length === 0) continue;
+
+    tallies[roundKey] = {};
+
+    matchups.forEach((matchup, position) => {
+      let name1Votes = 0;
+      let name2Votes = 0;
+
+      userBrackets.forEach(ub => {
+        const pick = ub.picks?.[roundKey]?.[position];
+        if (!pick) return;
+        if (pick === matchup.name1Id) name1Votes++;
+        else if (pick === matchup.name2Id) name2Votes++;
+      });
+
+      tallies[roundKey][position] = { name1Votes, name2Votes };
+    });
+  }
+
+  return tallies;
+}
+
+/**
  * Helper function to normalize name strings for case-insensitive comparison
  */
 const normalizeName = (name) => {
@@ -959,11 +993,69 @@ const advanceRound = async (req, res) => {
       });
     }
 
+    // Normalize round to camelCase key for fanOutScores
+    const roundNormMap = {
+      'roundOf32': 'roundOf32', 'Round of 32': 'roundOf32',
+      'roundOf16': 'roundOf16', 'Round of 16': 'roundOf16',
+      'elite8': 'elite8',       'Elite 8': 'elite8',
+      'final4': 'final4',       'Final 4': 'final4',
+      'championship': 'championship', 'Championship': 'championship',
+    };
+    const normalizedRoundKey = roundNormMap[round];
+
+    // Auto-resolve winnerId for any matchup that doesn't already have one,
+    // using owner1's UserBracket picks as the authoritative source.
+    const roundMatchups = bracket.matchups[normalizedRoundKey];
+    const hasUnresolved = roundMatchups && roundMatchups.some(m => !m.winnerId);
+
+    if (hasUnresolved) {
+      // Fetch owner1's UserBracket — no lockedAt filter; owners may not have locked.
+      const owner1UB = bracket.owner1UserId
+        ? await UserBracket.findOne({ bracketId: bracket._id, userId: bracket.owner1UserId })
+        : null;
+
+      // Collect vote tallies only if at least one position still needs a fallback.
+      let tallies = null;
+
+      for (let position = 0; position < roundMatchups.length; position++) {
+        const matchup = roundMatchups[position];
+        if (matchup.winnerId) continue; // already set — never overwrite
+
+        // Primary source: owner1's pick for this position.
+        const owner1Pick = owner1UB?.picks?.[normalizedRoundKey]?.[position];
+        if (owner1Pick) {
+          matchup.winnerId = owner1Pick;
+          continue;
+        }
+
+        // Fallback: vote-tally leader among locked UserBrackets.
+        if (!tallies) {
+          tallies = await aggregateVoteTallies(bracket._id, bracket);
+        }
+        const positionTallies = tallies?.[normalizedRoundKey]?.[position];
+        if (positionTallies) {
+          const { name1Votes, name2Votes } = positionTallies;
+          // name1Id wins on tie (mirrors proceedToNextRound tiebreaker convention).
+          matchup.winnerId = name1Votes >= name2Votes ? matchup.name1Id : matchup.name2Id;
+        }
+        // If no votes exist at all, matchup.winnerId stays null and
+        // advanceMatchupWinners will throw its original error — intentional.
+      }
+
+      bracket.markModified('matchups');
+    }
+
     // Use the utility function to advance winners
     const updatedBracket = advanceMatchupWinners(bracket, round);
 
+    // Mark matchups modified so Mongoose persists the subdocument array replacement
+    updatedBracket.markModified('matchups');
+
     // Save the updated bracket
     await updatedBracket.save();
+
+    // Fan out scores to locked-in user brackets (parity with proceedToNextRound)
+    await fanOutScores(updatedBracket._id, normalizedRoundKey, updatedBracket.matchups[normalizedRoundKey]);
 
     res.status(200).json({
       success: true,
@@ -997,7 +1089,7 @@ const proceedToNextRound = async (req, res) => {
   try {
     const bracketId = req.params.id;
 
-    const bracket = await findBracket(bracketId);
+    let bracket = await findBracket(bracketId);
     if (!bracket) {
       return res.status(404).json({ error: 'Bracket not found' });
     }
@@ -1028,7 +1120,7 @@ const proceedToNextRound = async (req, res) => {
       return res.status(400).json({ error: 'All matchups must have a winner set before advancing' });
     }
 
-    advanceMatchupWinners(bracket, currentRoundKey);
+    bracket = advanceMatchupWinners(bracket, currentRoundKey);
 
     await bracket.save();
 
@@ -1737,6 +1829,25 @@ const removeOwner2 = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/bracket/:id/vote-tallies
+ * Returns per-matchup vote tallies aggregated from all locked UserBracket documents.
+ * Response: { tallies: { [roundKey]: { [position]: { name1Votes, name2Votes } } } }
+ */
+const getVoteTallies = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const bracket = await findBracket(bracketId);
+    if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
+
+    const tallies = await aggregateVoteTallies(bracketId, bracket);
+    return res.status(200).json({ tallies });
+  } catch (error) {
+    console.error('Error in getVoteTallies:', error);
+    return res.status(500).json({ error: 'Failed to fetch vote tallies', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   getBracket,
@@ -1766,5 +1877,6 @@ module.exports = {
   getMyBracket,
   submitPick,
   lockMyBracket,
-  resetMyBracket
+  resetMyBracket,
+  getVoteTallies
 };

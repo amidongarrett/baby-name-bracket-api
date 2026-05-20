@@ -34,7 +34,8 @@ const {
   getMyBracket,
   submitPick,
   lockMyBracket,
-  resetMyBracket
+  resetMyBracket,
+  getVoteTallies
 } = require('../controllers/bracketController');
 const { requireAuth } = require('../middleware/auth');
 
@@ -109,6 +110,7 @@ router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
  */
 router.post('/bracket/:id/invite', requireAuth, sendInvites);
 router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
+router.get('/bracket/:id/vote-tallies', getVoteTallies);
 
 router.get('/bracket/:id/my-bracket',         getMyBracket);
 router.post('/bracket/:id/my-bracket/pick',   submitPick);

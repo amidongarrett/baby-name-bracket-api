@@ -111,7 +111,7 @@ function advanceMatchupWinners(bracket, targetRound) {
       const name1Id = winners[a];
       const name2Id = winners[b] || null;
       nextRoundMatchups.push({
-        id:        require('uuid').v4(),
+        id:        uuidv4(),
         round:     displayNameMap[nextRound],
         name1Id,
         name2Id,
@@ -126,7 +126,7 @@ function advanceMatchupWinners(bracket, targetRound) {
       const name1Id = winners[i];
       const name2Id = winners[i + 1] || null;
       nextRoundMatchups.push({
-        id:        require('uuid').v4(),
+        id:        uuidv4(),
         round:     displayNameMap[nextRound],
         name1Id,
         name2Id,
