@@ -1,6 +1,7 @@
 const Bracket = require('../models/Bracket');
 const BabyName = require('../models/BabyName');
 const UserBracket = require('../models/UserBracket');
+const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
 const { generateDivisionMatchups, generateAllRoundStubs } = require('../utils/seedingAlgorithm');
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
@@ -298,7 +299,11 @@ const getBracket = async (req, res) => {
       });
     }
 
-    return res.status(200).json(buildCurrentBracketResponse(bracket));
+    const response = buildCurrentBracketResponse(bracket);
+    const { owner1Icon, owner2Icon } = await resolveOwnerIcons(bracket);
+    response.owner1Icon = owner1Icon;
+    response.owner2Icon = owner2Icon;
+    return res.status(200).json(response);
 
   } catch (error) {
     console.error('Error in getBracket controller:', error);
@@ -307,6 +312,17 @@ const getBracket = async (req, res) => {
       message: error.message
     });
   }
+};
+
+const resolveOwnerIcons = async (bracket) => {
+  const ids = [bracket.owner1UserId, bracket.owner2UserId].filter(Boolean);
+  if (!ids.length) return { owner1Icon: bracket.owner1Icon || '👤', owner2Icon: bracket.owner2Icon || '👤' };
+  const users = await User.find({ id: { $in: ids } }).select('id icon').lean();
+  const byId = Object.fromEntries(users.map(u => [u.id, u.icon]));
+  return {
+    owner1Icon: (bracket.owner1UserId && byId[bracket.owner1UserId]) || bracket.owner1Icon || '👤',
+    owner2Icon: (bracket.owner2UserId && byId[bracket.owner2UserId]) || bracket.owner2Icon || '👤',
+  };
 };
 
 /**
@@ -327,7 +343,9 @@ const buildCurrentBracketResponse = (bracket) => {
     owner1UserId:  bracket.owner1UserId  || null,
     owner2UserId:  bracket.owner2UserId  || null,
     owner1Name:    bracket.owner1Name    || '',
+    owner1Icon:    bracket.owner1Icon    || '👤',
     owner2Name:    bracket.owner2Name    || '',
+    owner2Icon:    bracket.owner2Icon    || '👤',
     inviteCode:    bracket.inviteCode    || null,
 
     // Name lists (flat structure for frontend compatibility)
@@ -1157,6 +1175,41 @@ const lockMyBracket = async (req, res) => {
 };
 
 /**
+ * POST /api/bracket/:id/my-bracket/reset
+ * Clear all picks for the caller's UserBracket and unset lockedAt.
+ * Returns 403 if the bracket is already locked.
+ * Body: { userId }
+ */
+const resetMyBracket = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const userBracket = await UserBracket.findOne({ bracketId, userId });
+    if (!userBracket) {
+      return res.status(404).json({ error: 'UserBracket not found' });
+    }
+
+    if (userBracket.lockedAt) {
+      return res.status(403).json({ error: 'Cannot reset a locked bracket' });
+    }
+
+    userBracket.picks = defaultPicks();
+    userBracket.lockedAt = null;
+    await userBracket.save();
+
+    return res.status(200).json(userBracket);
+  } catch (error) {
+    console.error('Error in resetMyBracket controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
  * POST /api/bracket/lock-in
  * Per-owner lock-in. Once both owners lock in and 32 names exist,
  * the bracket is automatically activated using the same logic as lockBracket.
@@ -1640,8 +1693,8 @@ const removeOwner2 = async (req, res) => {
     bracket.owner2Names = [];
     bracket.owner2PendingNames = [];
 
-    // 2. Remove sharedNames entries where submittedBy === 'Owner 2'
-    bracket.sharedNames = bracket.sharedNames.filter(n => n.submittedBy !== 'Owner 2');
+    // 2. Clear all sharedNames (removing Owner 2 invalidates all shared pairs)
+    bracket.sharedNames = [];
 
     // 3. Clear isShared flags on all owner1Names (no partner list = no duplicates)
     bracket.owner1Names = bracket.owner1Names.map(n => {
@@ -1661,6 +1714,20 @@ const removeOwner2 = async (req, res) => {
     bracket.currentRound = 'Round of 32';
     bracket.owner1LockedIn = false;
     bracket.owner2LockedIn = false;
+
+    // 5. Delete all UserBracket prediction documents for this bracket
+    //    (covers Owner 1, Owner 2, and every guest — all must re-pick fresh)
+    await UserBracket.deleteMany({ bracketId: bracket._id });
+
+    // 6. Clear guest participant list
+    bracket.guestUserIds = [];
+
+    // 7. Clear Owner 2 identity so a new Owner 2 can be invited
+    bracket.owner2UserId = null;
+    bracket.owner2Name   = '';
+    bracket.owner2Icon   = '👤';
+    bracket.owner2Email  = '';
+    bracket.inviteCode   = null;   // will be regenerated when a new Owner 2 is invited
 
     await bracket.save();
     return res.status(200).json({ reset: true, bracket: buildCurrentBracketResponse(bracket) });
@@ -1698,5 +1765,6 @@ module.exports = {
   proceedToNextRound,
   getMyBracket,
   submitPick,
-  lockMyBracket
+  lockMyBracket,
+  resetMyBracket
 };

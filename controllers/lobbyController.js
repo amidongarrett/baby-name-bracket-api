@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const Bracket = require('../models/Bracket');
+const User = require('../models/User');
 const { sendInviteEmail } = require('../utils/email');
+const { TEST_EMAIL_RE } = require('../utils/testEmail');
 
 /**
  * Generate an 8-char uppercase alphanumeric invite code.
@@ -38,6 +40,7 @@ async function createBracket(req, res) {
   }
 
   const inviteCode = generateInviteCode();
+  const user = await User.findOne({ id: req.userId });
 
   let bracket;
   try {
@@ -45,6 +48,7 @@ async function createBracket(req, res) {
       name: `${owner1Name.trim()} & ${owner2Name.trim()}`,
       owner1UserId: req.userId,
       owner1Name: owner1Name.trim(),
+      owner1Icon: user?.icon || '👤',
       owner2Name: owner2Name.trim(),
       owner2Email: owner2Email.trim(),
       inviteCode,
@@ -58,6 +62,7 @@ async function createBracket(req, res) {
         name: `${owner1Name.trim()} & ${owner2Name.trim()}`,
         owner1UserId: req.userId,
         owner1Name: owner1Name.trim(),
+        owner1Icon: user?.icon || '👤',
         owner2Name: owner2Name.trim(),
         owner2Email: owner2Email.trim(),
         inviteCode: retryCode,
@@ -91,7 +96,10 @@ async function listMyBrackets(req, res) {
   const userId = req.userId;
   const projection = '_id name inviteCode owner1Name owner2Name status currentRound createdAt';
 
-  const [owned, guest] = await Promise.all([
+  const user = await User.findOne({ id: userId }, 'email').lean();
+  const isTestUser = TEST_EMAIL_RE.test(user?.email);
+
+  const queries = [
     Bracket.find(
       { $or: [{ owner1UserId: userId }, { owner2UserId: userId }] },
       projection
@@ -99,10 +107,22 @@ async function listMyBrackets(req, res) {
     Bracket.find(
       { guestUserIds: userId },
       projection
-    ).lean()
-  ]);
+    ).lean(),
+  ];
 
-  return res.status(200).json({ owned, guest });
+  if (isTestUser) {
+    queries.push(Bracket.find({ status: 'active' }, projection).lean());
+  }
+
+  const results = await Promise.all(queries);
+  const [owned, guest] = results;
+  const response = { owned, guest };
+
+  if (isTestUser) {
+    response.allActive = results[2];
+  }
+
+  return res.status(200).json(response);
 }
 
 /**
@@ -164,8 +184,11 @@ async function acceptOwner2(req, res) {
     return res.status(409).json({ error: 'Owner 2 seat already claimed' });
   }
 
+  const user = await User.findOne({ id: userId });
+
   // Idempotent — already this user, just return the bracket
   bracket.owner2UserId = userId;
+  bracket.owner2Icon = user?.icon || '👤';
   await bracket.save();
 
   return res.status(200).json({

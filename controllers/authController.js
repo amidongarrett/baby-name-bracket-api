@@ -3,6 +3,9 @@ const User = require('../models/User');
 const Otp = require('../models/Otp');
 const { signToken } = require('../utils/jwt');
 const { sendOtpEmail } = require('../utils/email');
+const { TEST_EMAIL_RE } = require('../utils/testEmail');
+
+const VALID_ICONS = ['👤','👨','👩','🐼','🦁','🐶','🐨','🦊','🐸','🐯','🦄','🐻','🐮'];
 
 /**
  * POST /api/auth/request-code
@@ -15,6 +18,16 @@ async function requestCode(req, res) {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+
+  // Test-email short-circuit: upsert user and return success immediately (no OTP issued)
+  if (TEST_EMAIL_RE.test(normalizedEmail)) {
+    await User.findOneAndUpdate(
+      { email: normalizedEmail },
+      { $setOnInsert: { email: normalizedEmail, displayName: 'Test User' } },
+      { upsert: true, new: true }
+    );
+    return res.status(200).json({ message: 'Code sent' });
+  }
 
   // Upsert user so we have a record ready
   await User.findOneAndUpdate(
@@ -45,6 +58,27 @@ async function verifyCode(req, res) {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+
+  // Test-email short-circuit: skip OTP entirely and sign a token immediately
+  if (TEST_EMAIL_RE.test(normalizedEmail)) {
+    const user = await User.findOneAndUpdate(
+      { email: normalizedEmail },
+      { $set: { lastLoginAt: new Date() }, $setOnInsert: { email: normalizedEmail, displayName: 'Test User' } },
+      { upsert: true, new: true }
+    );
+    const isNewUser = !user.displayName || user.displayName === 'Test User';
+    const token = signToken(user.id);
+    return res.status(200).json({
+      token,
+      isNewUser: false,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        icon: user.icon,
+      },
+    });
+  }
 
   // Find the most recent, unused, non-expired OTP for this email
   const otp = await Otp.findOne({
@@ -82,6 +116,7 @@ async function verifyCode(req, res) {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      icon: user.icon,
     },
   });
 }
@@ -92,17 +127,23 @@ async function verifyCode(req, res) {
  * body: { displayName: string }
  */
 async function setName(req, res) {
-  const { displayName } = req.body;
+  const { displayName, icon } = req.body;
   if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
     return res.status(400).json({ error: 'displayName is required' });
   }
   if (displayName.trim().length > 50) {
     return res.status(400).json({ error: 'displayName must be 50 characters or fewer' });
   }
+  if (icon !== undefined && !VALID_ICONS.includes(icon)) {
+    return res.status(400).json({ error: 'Invalid icon' });
+  }
+
+  const $set = { displayName: displayName.trim() };
+  if (icon !== undefined) $set.icon = icon;
 
   const user = await User.findOneAndUpdate(
     { id: req.userId },
-    { displayName: displayName.trim() },
+    { $set },
     { new: true }
   );
 
@@ -115,6 +156,7 @@ async function setName(req, res) {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      icon: user.icon,
     },
   });
 }
@@ -135,6 +177,7 @@ async function getMe(req, res) {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      icon: user.icon,
     },
   });
 }
@@ -145,7 +188,7 @@ async function getMe(req, res) {
  * body: { displayName?: string, email?: string }
  */
 async function updateProfile(req, res) {
-  const { displayName, email } = req.body;
+  const { displayName, email, icon } = req.body;
 
   // Validate displayName if provided
   if (displayName !== undefined) {
@@ -162,6 +205,11 @@ async function updateProfile(req, res) {
     if (typeof email !== 'string' || !email.trim() || !email.includes('@')) {
       return res.status(400).json({ error: 'email must be a valid email address' });
     }
+  }
+
+  // Validate icon if provided
+  if (icon !== undefined && !VALID_ICONS.includes(icon)) {
+    return res.status(400).json({ error: 'Invalid icon' });
   }
 
   const user = await User.findOne({ id: req.userId });
@@ -185,11 +233,14 @@ async function updateProfile(req, res) {
     await Otp.create({ email: normalizedEmail, code, expiresAt });
     await sendOtpEmail(normalizedEmail, code);
 
-    // If displayName also changed, update it now before the email verification step
-    if (displayName !== undefined) {
+    // If displayName or icon also changed, update them now before the email verification step
+    const preEmailChangeSet = {};
+    if (displayName !== undefined) preEmailChangeSet.displayName = displayName.trim();
+    if (icon !== undefined) preEmailChangeSet.icon = icon;
+    if (Object.keys(preEmailChangeSet).length > 0) {
       await User.findOneAndUpdate(
         { id: req.userId },
-        { displayName: displayName.trim() },
+        { $set: preEmailChangeSet },
         { new: true }
       );
     }
@@ -200,11 +251,14 @@ async function updateProfile(req, res) {
     });
   }
 
-  // No email change — update displayName only (if provided)
-  if (displayName !== undefined) {
+  // No email change — update displayName and/or icon if provided
+  if (displayName !== undefined || icon !== undefined) {
+    const $set = {};
+    if (displayName !== undefined) $set.displayName = displayName.trim();
+    if (icon !== undefined) $set.icon = icon;
     const updated = await User.findOneAndUpdate(
       { id: req.userId },
-      { displayName: displayName.trim() },
+      { $set },
       { new: true }
     );
     return res.status(200).json({
@@ -212,6 +266,7 @@ async function updateProfile(req, res) {
         id: updated.id,
         email: updated.email,
         displayName: updated.displayName,
+        icon: updated.icon,
       },
     });
   }
@@ -222,6 +277,7 @@ async function updateProfile(req, res) {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      icon: user.icon,
     },
   });
 }
@@ -271,6 +327,7 @@ async function verifyEmailChange(req, res) {
       id: updated.id,
       email: updated.email,
       displayName: updated.displayName,
+      icon: updated.icon,
     },
   });
 }

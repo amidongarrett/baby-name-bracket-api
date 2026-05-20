@@ -85,14 +85,14 @@ const generateDivisionMatchups = (owner1Names, owner2Names) => {
 
   // Division 2: Owner 2 top-8 seeds vs Owner 1 bottom-8 seeds
   const div2 = [
-    makeMatchup(o2[0],  o1[15], 0),  // W#1  vs H#16
-    makeMatchup(o2[7],  o1[8],  1),  // W#8  vs H#9
-    makeMatchup(o2[3],  o1[12], 2),  // W#4  vs H#13
-    makeMatchup(o2[4],  o1[11], 3),  // W#5  vs H#12
-    makeMatchup(o2[1],  o1[14], 4),  // W#2  vs H#15
-    makeMatchup(o2[6],  o1[9],  5),  // W#7  vs H#10
-    makeMatchup(o2[2],  o1[13], 6),  // W#3  vs H#14
     makeMatchup(o2[5],  o1[10], 7),  // W#6  vs H#11
+    makeMatchup(o2[2],  o1[13], 6),  // W#3  vs H#14
+    makeMatchup(o2[6],  o1[9],  5),  // W#7  vs H#10
+    makeMatchup(o2[1],  o1[14], 4),  // W#2  vs H#15
+    makeMatchup(o2[4],  o1[11], 3),  // W#5  vs H#12
+    makeMatchup(o2[3],  o1[12], 2),  // W#4  vs H#13
+    makeMatchup(o2[7],  o1[8],  1),  // W#8  vs H#9
+    makeMatchup(o2[0],  o1[15], 0),  // W#1  vs H#16
   ];
 
   return [...div1, ...div2];

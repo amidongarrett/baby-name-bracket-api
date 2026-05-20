@@ -104,19 +104,38 @@ function advanceMatchupWinners(bracket, targetRound) {
   // Build next-round matchups from real winners.
   // Pattern: matchups [0,1] → slot 0, matchups [2,3] → slot 1, etc.
   const nextRoundMatchups = [];
-  for (let i = 0; i < winners.length; i += 2) {
-    const name1Id = winners[i];
-    const name2Id = winners[i + 1] || null;
-    nextRoundMatchups.push({
-      id:        require('uuid').v4(),
-      round:     displayNameMap[nextRound],
-      name1Id,
-      name2Id,
-      seed1:     seedMap[name1Id] ?? null,
-      seed2:     seedMap[name2Id] ?? null,
-      winnerId:  null,
-      createdAt: new Date()
-    });
+  if (normalizedRound === 'elite8') {
+    // Cross-division pairing: Div1-top(0) vs Div2-top(2), Div1-bottom(1) vs Div2-bottom(3)
+    const pairs = [[0, 2], [1, 3]];
+    for (const [a, b] of pairs) {
+      const name1Id = winners[a];
+      const name2Id = winners[b] || null;
+      nextRoundMatchups.push({
+        id:        require('uuid').v4(),
+        round:     displayNameMap[nextRound],
+        name1Id,
+        name2Id,
+        seed1:     seedMap[name1Id] ?? null,
+        seed2:     seedMap[name2Id] ?? null,
+        winnerId:  null,
+        createdAt: new Date()
+      });
+    }
+  } else {
+    for (let i = 0; i < winners.length; i += 2) {
+      const name1Id = winners[i];
+      const name2Id = winners[i + 1] || null;
+      nextRoundMatchups.push({
+        id:        require('uuid').v4(),
+        round:     displayNameMap[nextRound],
+        name1Id,
+        name2Id,
+        seed1:     seedMap[name1Id] ?? null,
+        seed2:     seedMap[name2Id] ?? null,
+        winnerId:  null,
+        createdAt: new Date()
+      });
+    }
   }
   bracket.matchups[nextRound] = nextRoundMatchups;
 

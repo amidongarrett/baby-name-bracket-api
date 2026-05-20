@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    icon: { type: String, default: '👤' },
     createdAt: {
       type: Date,
       default: Date.now,

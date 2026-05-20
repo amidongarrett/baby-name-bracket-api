@@ -192,8 +192,10 @@ const BracketSchema = new mongoose.Schema({
   shareToken:   { type: String, default: null },
   owner1UserId: { type: String, default: null },
   owner1Name:   { type: String, default: '' },
+  owner1Icon:   { type: String, default: '👤' },
   owner2UserId: { type: String, default: null },
   owner2Name:   { type: String, default: '' },
+  owner2Icon:   { type: String, default: '👤' },
   owner2Email:  { type: String, default: '' },
   guestUserIds: { type: [String], default: [] }
 });
