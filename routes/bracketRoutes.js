@@ -33,6 +33,7 @@ const {
   removeOwner2,
   proceedToNextRound,
   getMyBracket,
+  getOwnerBrackets,
   submitPick,
   lockMyBracket,
   resetMyBracket,
@@ -114,6 +115,7 @@ router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRoun
 router.get('/bracket/:id/vote-tallies', getVoteTallies);
 
 router.get('/bracket/:id/my-bracket',         requireAuth, getMyBracket);
+router.get('/bracket/:id/owner-brackets',     requireAuth, getOwnerBrackets);
 router.post('/bracket/:id/my-bracket/pick',   requireAuth, submitPick);
 router.post('/bracket/:id/my-bracket/lock',   requireAuth, lockMyBracket);
 router.post('/bracket/:id/my-bracket/reset',  requireAuth, resetMyBracket);

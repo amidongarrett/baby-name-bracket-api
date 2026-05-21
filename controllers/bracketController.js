@@ -40,26 +40,45 @@ async function aggregateVoteTallies(bracketId, bracket) {
   const tallies = {};
 
   const VALID_ROUNDS_AGG = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+  const AGG_ROUND_SIZES = { roundOf32: 16, roundOf16: 8, elite8: 4, final4: 2, championship: 1 };
 
   for (const roundKey of VALID_ROUNDS_AGG) {
-    const matchups = bracket.matchups[roundKey];
-    if (!matchups || matchups.length === 0) continue;
+    const roundSize = AGG_ROUND_SIZES[roundKey];
+    if (roundSize === undefined) continue;
 
     tallies[roundKey] = {};
 
-    matchups.forEach((matchup, position) => {
-      let name1Votes = 0;
-      let name2Votes = 0;
-
+    for (let position = 0; position < roundSize; position++) {
+      // Count all picks at this position across locked UserBrackets
+      const pickCounts = {};
       userBrackets.forEach(ub => {
         const pick = ub.picks?.[roundKey]?.[position];
         if (!pick) return;
-        if (pick === matchup.name1Id) name1Votes++;
-        else if (pick === matchup.name2Id) name2Votes++;
+        pickCounts[pick] = (pickCounts[pick] || 0) + 1;
       });
 
-      tallies[roundKey][position] = { name1Votes, name2Votes };
-    });
+      const matchups = bracket.matchups[roundKey];
+      const matchup = matchups && matchups[position];
+
+      let name1Id, name2Id, name1Votes, name2Votes;
+
+      if (matchup && matchup.name1Id && matchup.name2Id) {
+        // Stub exists — use its IDs and map pick counts to them
+        name1Id = matchup.name1Id;
+        name2Id = matchup.name2Id;
+        name1Votes = pickCounts[name1Id] || 0;
+        name2Votes = pickCounts[name2Id] || 0;
+      } else {
+        // No stub yet — derive the top-2 picked nameIds from the distribution
+        const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
+        name1Id = sorted[0] ? sorted[0][0] : null;
+        name2Id = sorted[1] ? sorted[1][0] : null;
+        name1Votes = sorted[0] ? sorted[0][1] : 0;
+        name2Votes = sorted[1] ? sorted[1][1] : 0;
+      }
+
+      tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes };
+    }
   }
 
   return tallies;
@@ -1273,6 +1292,45 @@ const getMyBracket = async (req, res) => {
 };
 
 /**
+ * GET /api/bracket/:id/owner-brackets
+ * Returns both owner UserBrackets. Requires the caller to be owner1 or owner2.
+ */
+const getOwnerBrackets = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const userId = req.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const parentBracket = await Bracket.findById(bracketId).lean();
+    if (!parentBracket) {
+      return res.status(404).json({ error: 'Bracket not found' });
+    }
+
+    const { owner1UserId, owner2UserId } = parentBracket;
+    const isOwner =
+      (owner1UserId && owner1UserId.toString() === userId) ||
+      (owner2UserId && owner2UserId.toString() === userId);
+
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const [owner1UB, owner2UB] = await Promise.all([
+      owner1UserId ? UserBracket.findOne({ bracketId, userId: owner1UserId }) : null,
+      owner2UserId ? UserBracket.findOne({ bracketId, userId: owner2UserId }) : null,
+    ]);
+
+    return res.json({ owner1Bracket: owner1UB || null, owner2Bracket: owner2UB || null });
+  } catch (error) {
+    console.error('Error in getOwnerBrackets controller:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
  * POST /api/bracket/:id/my-bracket/pick
  * Upsert a single pick for the caller's UserBracket.
  * Body: { userId, round, position, selectedNameId }
@@ -1307,7 +1365,14 @@ const submitPick = async (req, res) => {
     );
 
     if (userBracket.lockedAt) {
-      return res.status(400).json({ error: 'Bracket is locked' });
+      const parentBracket = await Bracket.findById(bracketId).lean();
+      const isOwner = parentBracket &&
+        (parentBracket.owner1UserId?.toString() === userId ||
+         parentBracket.owner2UserId?.toString() === userId);
+      if (!isOwner) {
+        return res.status(400).json({ error: 'Bracket is locked' });
+      }
+      // Owner is allowed to update picks even when personally locked
     }
 
     const updated = await UserBracket.findOneAndUpdate(
@@ -1975,6 +2040,7 @@ module.exports = {
   removeOwner2,
   proceedToNextRound,
   getMyBracket,
+  getOwnerBrackets,
   submitPick,
   lockMyBracket,
   resetMyBracket,
