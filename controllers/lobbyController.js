@@ -132,8 +132,8 @@ async function listMyBrackets(req, res) {
   ).lean();
   const ubMap = Object.fromEntries(myUserBrackets.map(ub => [ub.bracketId.toString(), ub]));
 
-  // Total possible points if all picks are correct (16×1 + 8×2 + 4×4 + 2×8 + 1×16 = 62)
-  const TOTAL_MAX_POSSIBLE = 62;
+  // Total possible points if all picks are correct (16×1 + 8×2 + 4×4 + 2×8 + 1×16 = 80)
+  const TOTAL_MAX_POSSIBLE = 80;
 
   function computeMyMaxPossible(ub) {
     if (!ub) return TOTAL_MAX_POSSIBLE;
