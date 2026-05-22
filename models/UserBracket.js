@@ -14,6 +14,7 @@ const UserBracketSchema = new mongoose.Schema({
   picks:     { type: PicksSchema, default: () => ({}) },
   score:     { type: Number, default: 0 },
   lockedAt:  { type: Date, default: null },
+  tiebreakerPrediction: { type: Number, default: null, min: 0, max: 100 },
 }, { timestamps: true });
 
 UserBracketSchema.index({ bracketId: 1, userId: 1 }, { unique: true });

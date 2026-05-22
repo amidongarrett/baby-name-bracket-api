@@ -7,9 +7,13 @@ const { generateDivisionMatchups, generateAllRoundStubs } = require('../utils/se
 const { advanceMatchupWinners } = require('../utils/bracketProgression');
 const { sendBracketInviteEmail } = require('../utils/email');
 
+const ROUND_MULTIPLIERS = { roundOf32: 1, roundOf16: 2, elite8: 4, final4: 8, championship: 16 };
+
 async function fanOutScores(bracketId, roundKey, completedMatchups) {
   const userBrackets = await UserBracket.find({ bracketId, lockedAt: { $ne: null } });
   if (!userBrackets.length) return;
+
+  const multiplier = ROUND_MULTIPLIERS[roundKey] || 1;
 
   const ops = userBrackets.map(ub => {
     let delta = 0;
@@ -18,7 +22,7 @@ async function fanOutScores(bracketId, roundKey, completedMatchups) {
         matchup.winnerId &&
         ub.picks[roundKey] &&
         ub.picks[roundKey][position] === matchup.winnerId
-      ) delta++;
+      ) delta += multiplier;
     });
     return {
       updateOne: {
@@ -2012,6 +2016,151 @@ const getVoteTallies = async (req, res) => {
   }
 };
 
+const ROUND_PROGRESSION = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+
+/**
+ * GET /api/bracket/:id/scores
+ * Returns all locked UserBrackets for a bracket with computed score, maxPossible,
+ * and tiebreakerDelta, sorted by score desc then tiebreakerDelta asc.
+ */
+const getScores = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+
+    const [userBrackets, bracket] = await Promise.all([
+      UserBracket.find({ bracketId, lockedAt: { $ne: null } }).lean(),
+      findBracket(bracketId),
+    ]);
+
+    if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
+
+    // Determine which rounds are unresolved (no winnerId set on any matchup in that round)
+    const unresolvedRounds = ROUND_PROGRESSION.filter(roundKey => {
+      const matchups = bracket.matchups[roundKey];
+      if (!matchups || matchups.length === 0) return false;
+      return matchups.every(m => !m.winnerId);
+    });
+
+    // Build a set of eliminated nameIds (names that lost in a resolved round)
+    const eliminatedIds = new Set();
+    ROUND_PROGRESSION.forEach(roundKey => {
+      const matchups = bracket.matchups[roundKey];
+      if (!matchups) return;
+      matchups.forEach(m => {
+        if (!m.winnerId) return;
+        if (m.name1Id && m.name1Id !== m.winnerId) eliminatedIds.add(m.name1Id);
+        if (m.name2Id && m.name2Id !== m.winnerId) eliminatedIds.add(m.name2Id);
+      });
+    });
+
+    // Compute championship actual vote percentage if championship is resolved
+    let championshipActualPct = null;
+    if (bracket.championNameId) {
+      const champMatchups = bracket.matchups.championship;
+      if (champMatchups && champMatchups.length > 0) {
+        const cm = champMatchups[0];
+        if (cm.winnerId) {
+          // Use raw tallies from locked UserBrackets for the championship position
+          const allLocked = await UserBracket.find({ bracketId, lockedAt: { $ne: null } }).lean();
+          let winnerVotes = 0;
+          let totalVotes = 0;
+          allLocked.forEach(ub => {
+            const pick = ub.picks?.championship?.[0];
+            if (!pick) return;
+            totalVotes++;
+            if (pick === cm.winnerId) winnerVotes++;
+          });
+          championshipActualPct = totalVotes > 0 ? (winnerVotes / totalVotes) * 100 : null;
+        }
+      }
+    }
+
+    // Collect unique userIds for display name/icon lookup
+    const userIds = [...new Set(userBrackets.map(ub => ub.userId))];
+    const users = await User.find({ id: { $in: userIds } }).select('id displayName icon').lean();
+    const userMap = Object.fromEntries(users.map(u => [u.id, u]));
+
+    const results = userBrackets.map(ub => {
+      // maxPossible: current score + points from alive picks in unresolved rounds
+      let maxPossible = ub.score;
+      unresolvedRounds.forEach(roundKey => {
+        const picks = ub.picks?.[roundKey];
+        if (!picks) return;
+        const multiplier = ROUND_MULTIPLIERS[roundKey] || 1;
+        picks.forEach(pickId => {
+          if (pickId && !eliminatedIds.has(pickId)) {
+            maxPossible += multiplier;
+          }
+        });
+      });
+
+      // tiebreakerDelta
+      let tiebreakerDelta = null;
+      if (championshipActualPct !== null && ub.tiebreakerPrediction != null) {
+        tiebreakerDelta = Math.abs(championshipActualPct - ub.tiebreakerPrediction);
+      }
+
+      const user = userMap[ub.userId] || {};
+
+      return {
+        userId: ub.userId,
+        displayName: user.displayName || null,
+        icon: user.icon || null,
+        score: ub.score,
+        maxPossible,
+        tiebreakerPrediction: ub.tiebreakerPrediction ?? null,
+        tiebreakerDelta,
+      };
+    });
+
+    // Sort: score desc, then tiebreakerDelta asc (nulls last)
+    results.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.tiebreakerDelta === null && b.tiebreakerDelta === null) return 0;
+      if (a.tiebreakerDelta === null) return 1;
+      if (b.tiebreakerDelta === null) return -1;
+      return a.tiebreakerDelta - b.tiebreakerDelta;
+    });
+
+    return res.status(200).json(results);
+  } catch (error) {
+    console.error('Error in getScores:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/:id/my-bracket/tiebreaker
+ * Save the authenticated user's championship vote-split prediction.
+ * Body: { prediction: Number (0-100) }
+ */
+const saveTiebreakerPrediction = async (req, res) => {
+  try {
+    const bracketId = req.params.id;
+    const userId = req.userId;
+    const { prediction } = req.body;
+
+    if (typeof prediction !== 'number' || prediction < 0 || prediction > 100) {
+      return res.status(400).json({ error: 'prediction must be a number between 0 and 100' });
+    }
+
+    const updated = await UserBracket.findOneAndUpdate(
+      { bracketId, userId },
+      { $set: { tiebreakerPrediction: prediction } },
+      { new: true, upsert: false }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'UserBracket not found' });
+    }
+
+    return res.status(200).json(updated);
+  } catch (error) {
+    console.error('Error in saveTiebreakerPrediction:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   reorderNames,
@@ -2044,5 +2193,7 @@ module.exports = {
   submitPick,
   lockMyBracket,
   resetMyBracket,
-  getVoteTallies
+  getVoteTallies,
+  getScores,
+  saveTiebreakerPrediction
 };

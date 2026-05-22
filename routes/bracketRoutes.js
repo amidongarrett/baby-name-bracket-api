@@ -37,7 +37,9 @@ const {
   submitPick,
   lockMyBracket,
   resetMyBracket,
-  getVoteTallies
+  getVoteTallies,
+  getScores,
+  saveTiebreakerPrediction
 } = require('../controllers/bracketController');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 
@@ -113,12 +115,14 @@ router.get('/bracket/:id/invite-link', requireAuth, getInviteLink);
 router.post('/bracket/:id/invite', requireAuth, sendInvites);
 router.post('/bracket/:id/proceed-to-next-round', requireAuth, proceedToNextRound);
 router.get('/bracket/:id/vote-tallies', getVoteTallies);
+router.get('/bracket/:id/scores', getScores);
 
 router.get('/bracket/:id/my-bracket',         requireAuth, getMyBracket);
 router.get('/bracket/:id/owner-brackets',     requireAuth, getOwnerBrackets);
 router.post('/bracket/:id/my-bracket/pick',   requireAuth, submitPick);
-router.post('/bracket/:id/my-bracket/lock',   requireAuth, lockMyBracket);
-router.post('/bracket/:id/my-bracket/reset',  requireAuth, resetMyBracket);
+router.post('/bracket/:id/my-bracket/lock',       requireAuth, lockMyBracket);
+router.post('/bracket/:id/my-bracket/reset',      requireAuth, resetMyBracket);
+router.post('/bracket/:id/my-bracket/tiebreaker', requireAuth, saveTiebreakerPrediction);
 
 /**
  * PATCH /api/brackets/:id/names/reorder

@@ -1,8 +1,11 @@
 const crypto = require('crypto');
 const Bracket = require('../models/Bracket');
 const User = require('../models/User');
+const UserBracket = require('../models/UserBracket');
 const { sendInviteEmail } = require('../utils/email');
 const { TEST_EMAIL_RE } = require('../utils/testEmail');
+
+const LOBBY_ROUND_MULTIPLIERS = { roundOf32: 1, roundOf16: 2, elite8: 4, final4: 8, championship: 16 };
 
 /**
  * Generate an 8-char uppercase alphanumeric invite code.
@@ -116,10 +119,52 @@ async function listMyBrackets(req, res) {
 
   const results = await Promise.all(queries);
   const [owned, guest] = results;
-  const response = { owned, guest };
+
+  // Collect all bracket IDs across owned and guest lists
+  const allBrackets = [...owned, ...(results[2] || [])];
+  const guestBrackets = guest;
+  const allBracketIds = [...owned, ...guest, ...(results[2] || [])].map(b => b._id);
+
+  // Fetch the caller's UserBracket for each bracket in a single query
+  const myUserBrackets = await UserBracket.find(
+    { bracketId: { $in: allBracketIds }, userId },
+    'bracketId score picks'
+  ).lean();
+  const ubMap = Object.fromEntries(myUserBrackets.map(ub => [ub.bracketId.toString(), ub]));
+
+  // Total possible points if all picks are correct (16×1 + 8×2 + 4×4 + 2×8 + 1×16 = 62)
+  const TOTAL_MAX_POSSIBLE = 62;
+
+  function computeMyMaxPossible(ub) {
+    if (!ub) return TOTAL_MAX_POSSIBLE;
+    let max = ub.score || 0;
+    const picks = ub.picks || {};
+    Object.entries(LOBBY_ROUND_MULTIPLIERS).forEach(([roundKey, multiplier]) => {
+      const roundPicks = picks[roundKey];
+      if (!Array.isArray(roundPicks)) return;
+      roundPicks.forEach(pickId => {
+        if (pickId) max += multiplier;
+      });
+    });
+    return max;
+  }
+
+  function enrichBracket(b) {
+    const ub = ubMap[b._id.toString()];
+    return {
+      ...b,
+      myScore: ub?.score ?? 0,
+      myMaxPossible: computeMyMaxPossible(ub),
+    };
+  }
+
+  const response = {
+    owned: owned.map(enrichBracket),
+    guest: guest.map(enrichBracket),
+  };
 
   if (isTestUser) {
-    response.allActive = results[2];
+    response.allActive = results[2].map(enrichBracket);
   }
 
   return res.status(200).json(response);
