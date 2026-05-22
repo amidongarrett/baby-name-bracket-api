@@ -1825,6 +1825,7 @@ const unlockLockin = async (req, res) => {
     bracket.publishedRounds = [];
     bracket.championNameId  = null;
 
+    await UserBracket.deleteMany({ bracketId: bracket._id });
     await bracket.save();
 
     return res.status(200).json({
