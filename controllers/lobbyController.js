@@ -6,6 +6,34 @@ const { sendInviteEmail } = require('../utils/email');
 const { TEST_EMAIL_RE } = require('../utils/testEmail');
 
 const LOBBY_ROUND_MULTIPLIERS = { roundOf32: 1, roundOf16: 2, elite8: 4, final4: 8, championship: 16 };
+const LOBBY_ROUND_ORDER = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+const LOBBY_ROUND_SIZES = { roundOf32: 16, roundOf16: 8, elite8: 4, final4: 2, championship: 1 };
+
+function computeLobbyMaxPossible(userBracket, bracket) {
+  const eliminated = new Set();
+  for (const roundKey of LOBBY_ROUND_ORDER) {
+    for (const m of (bracket.matchups?.[roundKey] || [])) {
+      if (!m.winnerId) continue;
+      const w = m.winnerId.toString();
+      if (m.name1Id && m.name1Id.toString() !== w) eliminated.add(m.name1Id.toString());
+      if (m.name2Id && m.name2Id.toString() !== w) eliminated.add(m.name2Id.toString());
+    }
+  }
+  let maxPossible = userBracket.score || 0;
+  for (const roundKey of LOBBY_ROUND_ORDER) {
+    const multiplier = LOBBY_ROUND_MULTIPLIERS[roundKey];
+    const roundSize  = LOBBY_ROUND_SIZES[roundKey];
+    const matchups   = bracket.matchups?.[roundKey] || [];
+    for (let pos = 0; pos < roundSize; pos++) {
+      if (matchups[pos]?.winnerId) continue;
+      const pick = userBracket.picks?.[roundKey]?.[pos];
+      if (pick && !eliminated.has(pick.toString())) {
+        maxPossible += multiplier;
+      }
+    }
+  }
+  return maxPossible;
+}
 
 /**
  * Generate an 8-char uppercase alphanumeric invite code.
@@ -97,7 +125,7 @@ async function createBracket(req, res) {
  */
 async function listMyBrackets(req, res) {
   const userId = req.userId;
-  const projection = '_id name inviteCode owner1Name owner2Name status currentRound createdAt';
+  const projection = '_id name inviteCode owner1Name owner2Name status currentRound createdAt matchups';
 
   const user = await User.findOne({ id: userId }, 'email').lean();
   const isTestUser = TEST_EMAIL_RE.test(user?.email);
@@ -132,29 +160,13 @@ async function listMyBrackets(req, res) {
   ).lean();
   const ubMap = Object.fromEntries(myUserBrackets.map(ub => [ub.bracketId.toString(), ub]));
 
-  // Total possible points if all picks are correct (16×1 + 8×2 + 4×4 + 2×8 + 1×16 = 80)
-  const TOTAL_MAX_POSSIBLE = 80;
-
-  function computeMyMaxPossible(ub) {
-    if (!ub) return TOTAL_MAX_POSSIBLE;
-    let max = ub.score || 0;
-    const picks = ub.picks || {};
-    Object.entries(LOBBY_ROUND_MULTIPLIERS).forEach(([roundKey, multiplier]) => {
-      const roundPicks = picks[roundKey];
-      if (!Array.isArray(roundPicks)) return;
-      roundPicks.forEach(pickId => {
-        if (pickId) max += multiplier;
-      });
-    });
-    return max;
-  }
-
   function enrichBracket(b) {
     const ub = ubMap[b._id.toString()];
+    const myMaxPossible = ub ? computeLobbyMaxPossible(ub, b) : 80;
     return {
       ...b,
       myScore: ub?.score ?? 0,
-      myMaxPossible: computeMyMaxPossible(ub),
+      myMaxPossible,
     };
   }
 

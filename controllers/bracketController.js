@@ -9,6 +9,37 @@ const { sendBracketInviteEmail } = require('../utils/email');
 
 const ROUND_MULTIPLIERS = { roundOf32: 1, roundOf16: 2, elite8: 4, final4: 8, championship: 16 };
 
+const ROUND_ORDER     = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
+const AGG_ROUND_SIZES = { roundOf32: 16, roundOf16: 8, elite8: 4, final4: 2, championship: 1 };
+
+function computeMaxPossible(userBracket, bracket) {
+  // Build the set of eliminated nameIds from completed matchups
+  const eliminated = new Set();
+  for (const roundKey of ROUND_ORDER) {
+    for (const m of (bracket.matchups?.[roundKey] || [])) {
+      if (!m.winnerId) continue;
+      const w = m.winnerId.toString();
+      if (m.name1Id && m.name1Id.toString() !== w) eliminated.add(m.name1Id.toString());
+      if (m.name2Id && m.name2Id.toString() !== w) eliminated.add(m.name2Id.toString());
+    }
+  }
+  // Sum multipliers for each unfinished matchup where the user's pick is still alive
+  let maxPossible = userBracket.score || 0;
+  for (const roundKey of ROUND_ORDER) {
+    const multiplier = ROUND_MULTIPLIERS[roundKey];
+    const roundSize  = AGG_ROUND_SIZES[roundKey];
+    const matchups   = bracket.matchups?.[roundKey] || [];
+    for (let pos = 0; pos < roundSize; pos++) {
+      if (matchups[pos]?.winnerId) continue;   // already resolved, already in score
+      const pick = userBracket.picks?.[roundKey]?.[pos];
+      if (pick && !eliminated.has(pick.toString())) {
+        maxPossible += multiplier;
+      }
+    }
+  }
+  return maxPossible;
+}
+
 async function fanOutScores(bracketId, roundKey, completedMatchups) {
   const userBrackets = await UserBracket.find({ bracketId, lockedAt: { $ne: null } });
   if (!userBrackets.length) return;
@@ -2072,25 +2103,6 @@ const getScores = async (req, res) => {
 
     if (!bracket) return res.status(404).json({ error: 'Bracket not found' });
 
-    // Determine which rounds are unresolved (no winnerId set on any matchup in that round)
-    const unresolvedRounds = ROUND_PROGRESSION.filter(roundKey => {
-      const matchups = bracket.matchups[roundKey];
-      if (!matchups || matchups.length === 0) return false;
-      return matchups.every(m => !m.winnerId);
-    });
-
-    // Build a set of eliminated nameIds (names that lost in a resolved round)
-    const eliminatedIds = new Set();
-    ROUND_PROGRESSION.forEach(roundKey => {
-      const matchups = bracket.matchups[roundKey];
-      if (!matchups) return;
-      matchups.forEach(m => {
-        if (!m.winnerId) return;
-        if (m.name1Id && m.name1Id !== m.winnerId) eliminatedIds.add(m.name1Id);
-        if (m.name2Id && m.name2Id !== m.winnerId) eliminatedIds.add(m.name2Id);
-      });
-    });
-
     // Compute championship actual vote percentage if championship is resolved
     let championshipActualPct = null;
     if (bracket.championNameId) {
@@ -2120,17 +2132,7 @@ const getScores = async (req, res) => {
 
     const results = userBrackets.map(ub => {
       // maxPossible: current score + points from alive picks in unresolved rounds
-      let maxPossible = ub.score;
-      unresolvedRounds.forEach(roundKey => {
-        const picks = ub.picks?.[roundKey];
-        if (!picks) return;
-        const multiplier = ROUND_MULTIPLIERS[roundKey] || 1;
-        picks.forEach(pickId => {
-          if (pickId && !eliminatedIds.has(pickId)) {
-            maxPossible += multiplier;
-          }
-        });
-      });
+      const maxPossible = computeMaxPossible(ub, bracket);
 
       // tiebreakerDelta
       let tiebreakerDelta = null;
