@@ -25,6 +25,7 @@ const {
   publishRound,
   resetAndRegenerate,
   unlockNames,
+  unlockLockin,
   getNamesByGender,
   getInviteLink,
   sendInvites,
@@ -216,6 +217,7 @@ router.post('/admin/set-winner', setMatchupWinner);
 router.post('/admin/publish-round', publishRound);
 router.post('/admin/reset-and-regenerate', resetAndRegenerate);
 router.post('/admin/unlock-names', unlockNames);
+router.post('/admin/unlock-lockin', unlockLockin);
 
 /**
  * POST /api/bracket/advance

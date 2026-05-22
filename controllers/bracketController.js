@@ -1802,6 +1802,43 @@ const unlockNames = async (req, res) => {
   }
 };
 
+const unlockLockin = async (req, res) => {
+  try {
+    const bracketId = req.query.bracketId || req.body.bracketId;
+    const bracket = await findBracket(bracketId);
+
+    // Guard: nothing to unlock if neither owner is locked in
+    if (!bracket.owner1LockedIn && !bracket.owner2LockedIn) {
+      return res.status(400).json({ error: 'Neither owner is locked in. Nothing to unlock.' });
+    }
+
+    bracket.owner1LockedIn = false;
+    bracket.owner2LockedIn = false;
+    bracket.matchups.roundOf32    = [];
+    bracket.matchups.roundOf16    = [];
+    bracket.matchups.elite8       = [];
+    bracket.matchups.final4       = [];
+    bracket.matchups.championship = [];
+    bracket.previewMatchups = [];
+    bracket.status       = 'draft';
+    bracket.currentRound = 'Round of 32';
+    bracket.publishedRounds = [];
+    bracket.championNameId  = null;
+
+    await bracket.save();
+
+    return res.status(200).json({
+      success: true,
+      owner1LockedIn: false,
+      owner2LockedIn: false,
+      status: 'draft',
+    });
+  } catch (err) {
+    console.error('Error in unlockLockin controller:', err);
+    return res.status(500).json({ error: 'Failed to unlock lock-in' });
+  }
+};
+
 /**
  * GET /api/bracket/owner-picks
  * Returns per-matchup owner picks across ALL rounds.
@@ -2181,6 +2218,7 @@ module.exports = {
   publishRound,
   resetAndRegenerate,
   unlockNames,
+  unlockLockin,
   getNamesByGender,
   getInviteLink,
   sendInvites,
