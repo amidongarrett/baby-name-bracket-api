@@ -21,9 +21,10 @@ async function requestCode(req, res) {
 
   // Test-email short-circuit: upsert user and return success immediately (no OTP issued)
   if (TEST_EMAIL_RE.test(normalizedEmail)) {
+    const slug = normalizedEmail.match(/^test\+(.+)@amidonlabs\.com$/i)[1];
     await User.findOneAndUpdate(
       { email: normalizedEmail },
-      { $setOnInsert: { email: normalizedEmail, displayName: 'Test User' } },
+      { $setOnInsert: { email: normalizedEmail, displayName: slug } },
       { upsert: true, new: true }
     );
     return res.status(200).json({ message: 'Code sent' });
@@ -61,12 +62,12 @@ async function verifyCode(req, res) {
 
   // Test-email short-circuit: skip OTP entirely and sign a token immediately
   if (TEST_EMAIL_RE.test(normalizedEmail)) {
+    const slug = normalizedEmail.match(/^test\+(.+)@amidonlabs\.com$/i)[1];
     const user = await User.findOneAndUpdate(
       { email: normalizedEmail },
-      { $set: { lastLoginAt: new Date() }, $setOnInsert: { email: normalizedEmail, displayName: 'Test User' } },
+      { $set: { lastLoginAt: new Date() }, $setOnInsert: { email: normalizedEmail, displayName: slug } },
       { upsert: true, new: true }
     );
-    const isNewUser = !user.displayName || user.displayName === 'Test User';
     const token = signToken(user.id);
     return res.status(200).json({
       token,
