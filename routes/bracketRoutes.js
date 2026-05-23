@@ -41,7 +41,8 @@ const {
   resetMyBracket,
   getVoteTallies,
   getScores,
-  saveTiebreakerPrediction
+  saveTiebreakerPrediction,
+  getUserBracket
 } = require('../controllers/bracketController');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 
@@ -120,6 +121,7 @@ router.get('/bracket/:id/vote-tallies', getVoteTallies);
 router.get('/bracket/:id/scores', getScores);
 
 router.get('/bracket/:id/my-bracket',         requireAuth, getMyBracket);
+router.get('/bracket/:id/user-bracket/:userId', requireAuth, getUserBracket);
 router.get('/bracket/:id/owner-brackets',     requireAuth, getOwnerBrackets);
 router.post('/bracket/:id/my-bracket/pick',   requireAuth, submitPick);
 router.post('/bracket/:id/my-bracket/lock',       requireAuth, lockMyBracket);
