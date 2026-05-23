@@ -28,6 +28,7 @@ const {
   unlockLockin,
   getNamesByGender,
   getInviteLink,
+  joinViaShareToken,
   sendInvites,
   deleteBracket,
   deleteGuestSession,
@@ -124,6 +125,7 @@ router.post('/bracket/:id/my-bracket/pick',   requireAuth, submitPick);
 router.post('/bracket/:id/my-bracket/lock',       requireAuth, lockMyBracket);
 router.post('/bracket/:id/my-bracket/reset',      requireAuth, resetMyBracket);
 router.post('/bracket/:id/my-bracket/tiebreaker', requireAuth, saveTiebreakerPrediction);
+router.post('/bracket/:id/join-share',            requireAuth, joinViaShareToken);
 
 /**
  * PATCH /api/brackets/:id/names/reorder

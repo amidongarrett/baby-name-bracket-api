@@ -112,9 +112,10 @@ function buildAllPicks(matchups) {
   const e8 = [];
   for (let i = 0; i < 8; i += 2) e8.push(coin() ? r16[i] : r16[i + 1]);
 
-  // F4: pair up E8 winners, randomly pick one
+  // F4: cross-division pairs — (e8[0] vs e8[2]) → f4[0], (e8[1] vs e8[3]) → f4[1]
   const f4 = [];
-  for (let i = 0; i < 4; i += 2) f4.push(coin() ? e8[i] : e8[i + 1]);
+  f4.push(coin() ? e8[0] : e8[2]);
+  f4.push(coin() ? e8[1] : e8[3]);
 
   // Championship: randomly pick one of the F4 winners
   const ch = [coin() ? f4[0] : f4[1]];

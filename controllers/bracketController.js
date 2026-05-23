@@ -84,35 +84,100 @@ async function aggregateVoteTallies(bracketId, bracket) {
     tallies[roundKey] = {};
 
     for (let position = 0; position < roundSize; position++) {
-      // Count all picks at this position across locked UserBrackets
-      const pickCounts = {};
-      userBrackets.forEach(ub => {
-        const pick = ub.picks?.[roundKey]?.[position];
-        if (!pick) return;
-        pickCounts[pick] = (pickCounts[pick] || 0) + 1;
-      });
-
       const matchups = bracket.matchups[roundKey];
       const matchup = matchups && matchups[position];
 
       let name1Id, name2Id, name1Votes, name2Votes;
 
-      if (matchup && matchup.name1Id && matchup.name2Id) {
-        // Stub exists — use its IDs and map pick counts to them
-        name1Id = matchup.name1Id;
-        name2Id = matchup.name2Id;
-        name1Votes = pickCounts[name1Id] || 0;
-        name2Votes = pickCounts[name2Id] || 0;
-      } else {
-        // No stub yet — derive the top-2 picked nameIds from the distribution
-        const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
-        name1Id = sorted[0] ? sorted[0][0] : null;
-        name2Id = sorted[1] ? sorted[1][0] : null;
-        name1Votes = sorted[0] ? sorted[0][1] : 0;
-        name2Votes = sorted[1] ? sorted[1][1] : 0;
-      }
+      if (roundKey === 'final4') {
+        // final4 — simple direct read from picks.final4[position].
+        const pickCounts = {};
+        userBrackets.forEach(ub => {
+          const pick = ub.picks?.final4?.[position];
+          if (!pick) return;
+          pickCounts[pick] = (pickCounts[pick] || 0) + 1;
+        });
 
-      tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes };
+        if (matchup && matchup.name1Id && matchup.name2Id) {
+          name1Id = matchup.name1Id;
+          name2Id = matchup.name2Id;
+          name1Votes = pickCounts[name1Id] || 0;
+          name2Votes = pickCounts[name2Id] || 0;
+        } else {
+          const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
+          name1Id = sorted[0]?.[0] ?? null;
+          name2Id = sorted[1]?.[0] ?? null;
+          name1Votes = sorted[0]?.[1] ?? 0;
+          name2Votes = sorted[1]?.[1] ?? 0;
+        }
+        tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes, allVotes: { ...pickCounts } };
+      } else if (roundKey === 'championship') {
+        // championship — reads from picks.championship[position].
+        const pickCounts = {};
+        userBrackets.forEach(ub => {
+          const pick = ub.picks?.championship?.[position];
+          if (!pick) return;
+          pickCounts[pick] = (pickCounts[pick] || 0) + 1;
+        });
+
+        if (matchup && matchup.name1Id && matchup.name2Id) {
+          name1Id = matchup.name1Id;
+          name2Id = matchup.name2Id;
+          name1Votes = pickCounts[name1Id] || 0;
+          name2Votes = pickCounts[name2Id] || 0;
+        } else {
+          const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
+          name1Id = sorted[0]?.[0] ?? null;
+          name2Id = sorted[1]?.[0] ?? null;
+          name1Votes = sorted[0]?.[1] ?? 0;
+          name2Votes = sorted[1]?.[1] ?? 0;
+        }
+        tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes, allVotes: { ...pickCounts } };
+      } else if (roundKey === 'roundOf32') {
+        // R32 is the base round — read its own pick slot directly.
+        const pickCounts = {};
+        userBrackets.forEach(ub => {
+          const pick = ub.picks?.roundOf32?.[position];
+          if (!pick) return;
+          pickCounts[pick] = (pickCounts[pick] || 0) + 1;
+        });
+
+        if (matchup && matchup.name1Id && matchup.name2Id) {
+          name1Id = matchup.name1Id;
+          name2Id = matchup.name2Id;
+          name1Votes = pickCounts[name1Id] || 0;
+          name2Votes = pickCounts[name2Id] || 0;
+        } else {
+          const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
+          name1Id = sorted[0] ? sorted[0][0] : null;
+          name2Id = sorted[1] ? sorted[1][0] : null;
+          name1Votes = sorted[0] ? sorted[0][1] : 0;
+          name2Votes = sorted[1] ? sorted[1][1] : 0;
+        }
+        tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes, allVotes: { ...pickCounts } };
+      } else {
+        // roundOf16 and elite8: simple direct read from ub.picks[roundKey][position].
+        const pickCounts = {};
+        userBrackets.forEach(ub => {
+          const pick = ub.picks?.[roundKey]?.[position];
+          if (!pick) return;
+          pickCounts[pick] = (pickCounts[pick] || 0) + 1;
+        });
+
+        if (matchup && matchup.name1Id && matchup.name2Id) {
+          name1Id = matchup.name1Id;
+          name2Id = matchup.name2Id;
+          name1Votes = pickCounts[name1Id] || 0;
+          name2Votes = pickCounts[name2Id] || 0;
+        } else {
+          const sorted = Object.entries(pickCounts).sort((a, b) => b[1] - a[1]);
+          name1Id = sorted[0] ? sorted[0][0] : null;
+          name2Id = sorted[1] ? sorted[1][0] : null;
+          name1Votes = sorted[0] ? sorted[0][1] : 0;
+          name2Votes = sorted[1] ? sorted[1][1] : 0;
+        }
+        tallies[roundKey][position] = { name1Id, name1Votes, name2Id, name2Votes, allVotes: { ...pickCounts } };
+      }
     }
   }
 
@@ -1938,6 +2003,53 @@ const getInviteLink = async (req, res) => {
 };
 
 /**
+ * POST /api/bracket/:id/join-share
+ * Accept a share-token invite link and register the authenticated user as a guest participant.
+ * Idempotent — safe to call multiple times for the same user/bracket pair.
+ * Body: { shareToken: string }
+ * Response: { bracketId } or { bracketId, alreadyOwner: true }
+ */
+const joinViaShareToken = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { shareToken } = req.body;
+    const userId = req.userId;
+
+    if (!shareToken) {
+      return res.status(400).json({ error: 'shareToken is required' });
+    }
+
+    const bracket = await Bracket.findOne({ _id: id, shareToken });
+    if (!bracket) {
+      return res.status(404).json({ error: 'Invalid share token' });
+    }
+
+    // Owners do not need to join as guests
+    if (bracket.owner1UserId === userId || bracket.owner2UserId === userId) {
+      return res.status(200).json({ bracketId: bracket._id, alreadyOwner: true });
+    }
+
+    // Idempotent — only push if not already present
+    if (!bracket.guestUserIds.includes(userId)) {
+      bracket.guestUserIds.push(userId);
+      await bracket.save();
+    }
+
+    // Eagerly create the UserBracket so getMyBracket returns a real document
+    await UserBracket.findOneAndUpdate(
+      { bracketId: bracket._id, userId },
+      { $setOnInsert: { picks: defaultPicks(), score: 0, lockedAt: null } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.status(200).json({ bracketId: bracket._id });
+  } catch (error) {
+    console.error('Error in joinViaShareToken:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
  * POST /api/bracket/:id/invite
  * Sends invitation emails to the provided list of addresses.
  * Lazily generates shareToken on first call if not yet set.
@@ -2224,6 +2336,7 @@ module.exports = {
   unlockLockin,
   getNamesByGender,
   getInviteLink,
+  joinViaShareToken,
   sendInvites,
   deleteBracket,
   deleteGuestSession,
