@@ -2327,6 +2327,39 @@ const saveTiebreakerPrediction = async (req, res) => {
   }
 };
 
+const getUserBracket = async (req, res) => {
+  try {
+    const { id: bracketId, userId: targetUserId } = req.params;
+
+    const [userBracket, bracket, userRecord] = await Promise.all([
+      UserBracket.findOne({ bracketId, userId: targetUserId, lockedAt: { $ne: null } }).lean(),
+      findBracket(bracketId),
+      User.findOne({ id: targetUserId }).select('displayName icon').lean(),
+    ]);
+
+    if (!userBracket) {
+      return res.status(404).json({ error: 'No locked bracket found for this user' });
+    }
+    if (!bracket) {
+      return res.status(404).json({ error: 'Bracket not found' });
+    }
+
+    return res.status(200).json({
+      bracketId,
+      userId: targetUserId,
+      displayName: userRecord?.displayName || null,
+      icon:        userRecord?.icon || null,
+      picks:       userBracket.picks,
+      score:       userBracket.score,
+      maxPossible: computeMaxPossible(userBracket, bracket),
+      lockedAt:    userBracket.lockedAt,
+    });
+  } catch (error) {
+    console.error('Error in getUserBracket:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   reorderNames,
@@ -2363,5 +2396,6 @@ module.exports = {
   resetMyBracket,
   getVoteTallies,
   getScores,
-  saveTiebreakerPrediction
+  saveTiebreakerPrediction,
+  getUserBracket
 };
