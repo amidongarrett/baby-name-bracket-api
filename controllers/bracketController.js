@@ -41,8 +41,19 @@ function computeMaxPossible(userBracket, bracket) {
 }
 
 async function fanOutScores(bracketId, roundKey, completedMatchups) {
+  // Idempotency guard: skip if this round was already scored
+  const bracketMeta = await Bracket.findById(bracketId).select('scoredRounds').lean();
+  if (bracketMeta?.scoredRounds?.includes(roundKey)) {
+    console.log(`[fanOutScores] ${roundKey} already scored for bracket ${bracketId} — skipping`);
+    return;
+  }
+
   const userBrackets = await UserBracket.find({ bracketId, lockedAt: { $ne: null } });
-  if (!userBrackets.length) return;
+  if (!userBrackets.length) {
+    // Still mark as scored so a later empty-then-populated run does not double-count
+    await Bracket.updateOne({ _id: bracketId }, { $addToSet: { scoredRounds: roundKey } });
+    return;
+  }
 
   const multiplier = ROUND_MULTIPLIERS[roundKey] || 1;
 
@@ -64,6 +75,9 @@ async function fanOutScores(bracketId, roundKey, completedMatchups) {
   });
 
   await UserBracket.bulkWrite(ops);
+
+  // Mark this round as scored so subsequent calls are no-ops
+  await Bracket.updateOne({ _id: bracketId }, { $addToSet: { scoredRounds: roundKey } });
 }
 
 /**

@@ -212,7 +212,10 @@ const BracketSchema = new mongoose.Schema({
   owner2Name:   { type: String, default: '' },
   owner2Icon:   { type: String, default: '👤' },
   owner2Email:  { type: String, default: '' },
-  guestUserIds: { type: [String], default: [] }
+  guestUserIds: { type: [String], default: [] },
+
+  // Rounds that have been scored via fanOutScores — used for idempotency guard
+  scoredRounds: { type: [String], default: [] }
 });
 
 // Pre-save hook to update the updatedAt timestamp
