@@ -9,6 +9,16 @@ const LOBBY_ROUND_MULTIPLIERS = { roundOf32: 1, roundOf16: 2, elite8: 4, final4:
 const LOBBY_ROUND_ORDER = ['roundOf32', 'roundOf16', 'elite8', 'final4', 'championship'];
 const LOBBY_ROUND_SIZES = { roundOf32: 16, roundOf16: 8, elite8: 4, final4: 2, championship: 1 };
 
+function defaultPicks() {
+  return {
+    roundOf32:    Array(16).fill(null),
+    roundOf16:    Array(8).fill(null),
+    elite8:       Array(4).fill(null),
+    final4:       Array(2).fill(null),
+    championship: Array(1).fill(null),
+  };
+}
+
 function computeLobbyMaxPossible(userBracket, bracket) {
   const eliminated = new Set();
   for (const roundKey of LOBBY_ROUND_ORDER) {
@@ -221,6 +231,12 @@ async function joinBracket(req, res) {
     bracket.guestUserIds.push(userId);
     await bracket.save();
 
+    await UserBracket.findOneAndUpdate(
+      { bracketId: bracket._id, userId },
+      { $setOnInsert: { picks: defaultPicks(), score: 0, lockedAt: null } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
     return res.status(200).json({
       bracket: {
         id: bracket._id,
@@ -255,6 +271,12 @@ async function joinBracket(req, res) {
 
   bracket.guestUserIds.push(userId);
   await bracket.save();
+
+  await UserBracket.findOneAndUpdate(
+    { bracketId: bracket._id, userId },
+    { $setOnInsert: { picks: defaultPicks(), score: 0, lockedAt: null } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
   return res.status(200).json({
     bracket: {
