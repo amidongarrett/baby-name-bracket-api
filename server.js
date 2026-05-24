@@ -11,6 +11,7 @@ const { connectDB } = require('./config/database');
 const bracketRoutes = require('./routes/bracketRoutes');
 const authRoutes = require('./routes/authRoutes');
 const lobbyRoutes = require('./routes/lobbyRoutes');
+const namesRoutes = require('./routes/namesRoutes');
 
 // Connect to MongoDB
 connectDB();
@@ -94,6 +95,9 @@ app.use('/api/auth', authRoutes);
 
 // Mount lobby routes under /api
 app.use('/api', lobbyRoutes);
+
+// Mount names routes under /api
+app.use('/api', namesRoutes);
 
 // API root endpoint
 app.get('/api', (req, res) => {
