@@ -1,6 +1,7 @@
 'use strict';
 
 const Anthropic = require('@anthropic-ai/sdk');
+const UserNamePreferences = require('../models/UserNamePreferences');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -11,7 +12,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
  * Response: { suggestions: [{ name: string, note: string }] }
  */
 async function suggestNames(req, res) {
-  const { prompt, gender, excludeNames } = req.body;
+  const { prompt, gender, excludeNames, likedNames } = req.body;
 
   // --- Input validation ---
   if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
@@ -24,13 +25,18 @@ async function suggestNames(req, res) {
   }
 
   const safeExcludeNames = Array.isArray(excludeNames) ? excludeNames.filter(n => typeof n === 'string') : [];
+  const safeLikedNames = Array.isArray(likedNames) ? likedNames.filter(n => typeof n === 'string') : [];
 
   // --- Build system prompt ---
   const excludeBlock = safeExcludeNames.length > 0
     ? safeExcludeNames.map(n => `- ${n}`).join('\n')
     : '(none)';
 
-  const systemText = `You are a baby name advisor. The parents are looking for ${gender} baby names.
+  const likedBlock = safeLikedNames.length > 0
+    ? `This user has already chosen and likes these names: ${safeLikedNames.join(', ')}. Generate names in a similar style.\n\n`
+    : '';
+
+  const systemText = `${likedBlock}You are a baby name advisor. The parents are looking for ${gender} baby names.
 Return ONLY a JSON array — no markdown, no explanation — of 8 to 12 name objects.
 Each object must have exactly two fields:
   "name": the baby name (string, title-cased)
@@ -92,4 +98,68 @@ Gender guidance:
   return res.status(200).json({ suggestions });
 }
 
-module.exports = { suggestNames };
+/**
+ * GET /api/names/preferences/:bracketId
+ * Requires auth. Returns the owner's persisted bank and dismissed names,
+ * creating a blank record if none exists.
+ */
+async function getPreferences(req, res) {
+  const { userId } = req;
+  const { bracketId } = req.params;
+  try {
+    const doc = await UserNamePreferences.findOneAndUpdate(
+      { userId, bracketId },
+      {},
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return res.status(200).json({ dismissedNames: doc.dismissedNames, bankNames: doc.bankNames });
+  } catch (err) {
+    console.error('getPreferences error:', err);
+    return res.status(500).json({ error: 'Failed to load preferences' });
+  }
+}
+
+/**
+ * PATCH /api/names/preferences/:bracketId
+ * Requires auth. Partially updates dismissedNames and/or bankNames.
+ * Body: { dismissedNames?: string[], bankNames?: { name: string, note: string }[] }
+ */
+async function patchPreferences(req, res) {
+  const { userId } = req;
+  const { bracketId } = req.params;
+  const { dismissedNames, bankNames } = req.body;
+
+  // Validate provided fields
+  if (dismissedNames !== undefined) {
+    if (!Array.isArray(dismissedNames) || dismissedNames.some(n => typeof n !== 'string')) {
+      return res.status(400).json({ error: 'dismissedNames must be an array of strings' });
+    }
+  }
+  if (bankNames !== undefined) {
+    if (
+      !Array.isArray(bankNames) ||
+      bankNames.some(item => !item || typeof item.name !== 'string' || typeof item.note !== 'string')
+    ) {
+      return res.status(400).json({ error: 'bankNames must be an array of { name: string, note: string } objects' });
+    }
+  }
+
+  // Build $set from only the keys that were provided
+  const updates = {};
+  if (dismissedNames !== undefined) updates.dismissedNames = dismissedNames;
+  if (bankNames !== undefined) updates.bankNames = bankNames;
+
+  try {
+    const doc = await UserNamePreferences.findOneAndUpdate(
+      { userId, bracketId },
+      { $set: updates },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return res.status(200).json({ dismissedNames: doc.dismissedNames, bankNames: doc.bankNames });
+  } catch (err) {
+    console.error('patchPreferences error:', err);
+    return res.status(500).json({ error: 'Failed to update preferences' });
+  }
+}
+
+module.exports = { suggestNames, getPreferences, patchPreferences };
