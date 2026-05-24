@@ -230,7 +230,23 @@ async function main() {
       }
 
       if (!bracketLocked) {
-        status = `OK`;
+        // e. Lock the persona's bracket after all picks are submitted
+        try {
+          await apiFetch(
+            'POST',
+            `/api/bracket/${bracketId}/my-bracket/lock`,
+            null,
+            personaToken
+          );
+          console.log(`  [${personaName || email}] bracket locked successfully`);
+          status = 'OK (locked)';
+        } catch (lockErr) {
+          const body = lockErr.body;
+          const msg = (body && typeof body === 'object' && (body.error || body.message)) || lockErr.message;
+          console.log(`  [${personaName || email}] bracket lock FAILED: ${msg}`);
+          status = 'WARN (lock failed)';
+          errorMsg = msg;
+        }
       }
     } catch (err) {
       status = 'ERROR';
