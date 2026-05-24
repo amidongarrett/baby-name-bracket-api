@@ -37,7 +37,7 @@ async function suggestNames(req, res) {
     : '';
 
   const systemText = `${likedBlock}You are a baby name advisor. The parents are looking for ${gender} baby names.
-Return ONLY a JSON array — no markdown, no explanation — of 8 to 12 name objects.
+Return ONLY a JSON array — no markdown, no explanation — of 12 to 16 name objects.
 Each object must have exactly two fields:
   "name": the baby name (string, title-cased)
   "note": one short phrase (≤ 8 words) describing origin or character (e.g. "Irish origin, soft sound")
@@ -88,12 +88,14 @@ Gender guidance:
       throw new Error('Response is not an array');
     }
     suggestions = parsed
-      .filter(item => item && typeof item.name === 'string' && typeof item.note === 'string')
-      .slice(0, 12);
+      .filter(item => item && typeof item.name === 'string' && typeof item.note === 'string');
   } catch (err) {
     console.error('Failed to parse Anthropic response:', rawText, err);
     return res.status(502).json({ error: 'AI service returned an unexpected response' });
   }
+
+  const excludeSet = new Set(safeExcludeNames.map(n => n.toLowerCase()));
+  suggestions = suggestions.filter(s => !excludeSet.has(s.name.toLowerCase())).slice(0, 12);
 
   return res.status(200).json({ suggestions });
 }
