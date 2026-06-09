@@ -2522,13 +2522,20 @@ const resolveName = async (req, res) => {
       return res.status(404).json({ error: 'Name not found in any owner list.' });
     }
 
+    // Find the most recent round that contains a hate OR like+suggestion vote
+    const targetRound = [...bracket.voteRounds].reverse().find(r =>
+      r.votes.some(v => v.reaction === 'hate' || (v.reaction === 'like' && v.suggestion))
+    ) || bracket.voteRounds[bracket.voteRounds.length - 1];
+
     if (action === 'drop') {
       bracket[ownerKey].splice(nameIdx, 1);
+      if (targetRound) {
+        targetRound.votes = targetRound.votes.filter(v => v.nameId !== nameId);
+      }
     } else if (action === 'keep') {
-      // Clear any pending suggestion on the latest vote round
-      const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
-      if (latestRound) {
-        const vote = latestRound.votes.find(v => v.nameId === nameId);
+      // Clear any pending suggestion on the target vote round
+      if (targetRound) {
+        const vote = targetRound.votes.find(v => v.nameId === nameId);
         if (vote) vote.suggestion = null;
       }
     } else if (action === 'replace') {
@@ -2536,19 +2543,19 @@ const resolveName = async (req, res) => {
         return res.status(400).json({ error: 'replacementName is required for action "replace".' });
       }
       bracket[ownerKey][nameIdx].value = replacementName.trim();
-      // Clear hate status in the latest round
-      const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
-      if (latestRound) {
-        latestRound.votes = latestRound.votes.filter(v => !(v.nameId === nameId && v.reaction === 'hate'));
+      // Clear hate and like+suggestion votes for this name in the target round
+      if (targetRound) {
+        targetRound.votes = targetRound.votes.filter(
+          v => !(v.nameId === nameId && (v.reaction === 'hate' || (v.reaction === 'like' && v.suggestion)))
+        );
       }
     }
 
-    // Check if all hated/suggested names across the latest cycle are resolved
-    const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
+    // Check if all hated/suggested names across the target cycle are resolved
     let nextStatus = 'voting';
-    if (latestRound) {
-      const remainingHated = latestRound.votes.filter(v => v.reaction === 'hate').length;
-      const remainingSuggested = latestRound.votes.filter(v => v.reaction === 'like' && v.suggestion).length;
+    if (targetRound) {
+      const remainingHated = targetRound.votes.filter(v => v.reaction === 'hate').length;
+      const remainingSuggested = targetRound.votes.filter(v => v.reaction === 'like' && v.suggestion).length;
       if (remainingHated === 0 && remainingSuggested === 0) {
         bracket.status = 'preview';
         nextStatus = 'preview';
