@@ -149,7 +149,17 @@ const BracketSchema = new mongoose.Schema({
     type: [NameSchema],
     default: []
   },
-  
+
+  // Permanently-dropped names that were hated by the partner
+  hatedNamesBank: {
+    type: [{
+      id:      { type: String, required: true },
+      value:   { type: String, required: true },
+      ownerId: { type: String, required: true }   // 'owner1' | 'owner2'
+    }],
+    default: []
+  },
+
   // Preview matchups (auto-calculated in draft mode, not saved permanently)
   previewMatchups: {
     type: [MatchupSchema],

@@ -615,6 +615,7 @@ const buildCurrentBracketResponse = (bracket) => {
     owner2PendingNames: bracket.owner2PendingNames,
     owner1BankNames: bracket.owner1BankNames,
     owner2BankNames: bracket.owner2BankNames,
+    hatedNamesBank: bracket.hatedNamesBank || [],
     allNames: allNames,
 
     // Counts for UI display
@@ -1600,7 +1601,7 @@ const lockInOwner = async (req, res) => {
 
     const bracket = await findBracket(bracketId);
 
-    if (bracket.status === 'active' || bracket.status === 'voting' || bracket.status === 'preview') {
+    if (bracket.status === 'active' || bracket.status === 'preview') {
       return res.status(400).json({
         error: 'Bracket names are already locked.',
         owner1LockedIn: bracket.owner1LockedIn,
@@ -1609,20 +1610,40 @@ const lockInOwner = async (req, res) => {
       });
     }
 
-    // Set the appropriate lock-in flag
-    if (owner === 'Owner 1') {
-      bracket.owner1LockedIn = true;
-    } else {
-      bracket.owner2LockedIn = true;
+    // Set the owner's lockedIn flag
+    if (owner === 'Owner 1') bracket.owner1LockedIn = true;
+    else bracket.owner2LockedIn = true;
+
+    if (bracket.status === 'draft') {
+      // === Initial lock-in path (unchanged) ===
+      const totalNames = bracket.getTotalNameCount();
+      if (bracket.owner1LockedIn && bracket.owner2LockedIn && totalNames === 32) {
+        bracket.status = 'voting';
+        bracket.voteRounds = [{ cycle: 1, submittedBy: [], votes: [] }];
+      }
+    } else if (bracket.status === 'voting') {
+      // === Re-lock-in path after hate/suggestion cycle ===
+      if (bracket.owner1LockedIn && bracket.owner2LockedIn) {
+        // Inspect the latest cycle for unresolved suggestions
+        const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
+        const unresolvedSuggestions = latestRound
+          ? latestRound.votes.filter(v => v.reaction === 'like' && v.suggestion).length
+          : 0;
+
+        if (unresolvedSuggestions === 0) {
+          bracket.status = 'preview';
+        } else {
+          // Start a new cycle pre-filled with remaining suggestion votes
+          const newCycle = latestRound.cycle + 1;
+          const preFilled = latestRound.votes
+            .filter(v => v.reaction !== 'hate')
+            .map(v => ({ voterId: v.voterId, nameId: v.nameId, reaction: v.reaction, suggestion: v.suggestion || null }));
+          bracket.voteRounds.push({ cycle: newCycle, submittedBy: [], votes: preFilled });
+        }
+      }
     }
 
-    // If both owners are locked in and there are exactly 32 names, enter the voting phase
-    const totalNames = bracket.getTotalNameCount();
-    if (bracket.owner1LockedIn && bracket.owner2LockedIn && totalNames === 32) {
-      bracket.status = 'voting';
-      bracket.voteRounds = [{ cycle: 1, submittedBy: [], votes: [] }];
-    }
-
+    bracket.markModified('voteRounds');
     await bracket.save();
 
     return res.status(200).json({
@@ -2396,7 +2417,24 @@ function evaluateVotingOutcomes(bracket, cycle) {
     }
   }
 
-  const nextStatus = (hatedNames.length === 0 && suggestedNames.length === 0) ? 'preview' : 'voting';
+  // Auto-drop hated names: move from active list → hatedNamesBank
+  for (const { nameId, ownerId } of hatedNames) {
+    const namesList = ownerId === 'owner1' ? bracket.owner1Names : bracket.owner2Names;
+    const idx = namesList.findIndex(n => n.id === nameId);
+    if (idx < 0) continue;
+    const [removed] = namesList.splice(idx, 1);
+    bracket.hatedNamesBank.push({ id: removed.id, value: removed.value, ownerId });
+    // Remove the hate vote from the current round so it doesn't resurface
+    round.votes = round.votes.filter(v => !(v.nameId === nameId && v.reaction === 'hate'));
+  }
+
+  // Reset lockedIn for each owner whose names were hated
+  const affectedOwners = new Set(hatedNames.map(h => h.ownerId));
+  if (affectedOwners.has('owner1')) bracket.owner1LockedIn = false;
+  if (affectedOwners.has('owner2')) bracket.owner2LockedIn = false;
+
+  // With hate votes removed, re-evaluate whether we can advance
+  const nextStatus = (suggestedNames.length === 0 && affectedOwners.size === 0) ? 'preview' : 'voting';
 
   if (nextStatus === 'preview') {
     bracket.status = 'preview';
@@ -2470,6 +2508,7 @@ const submitVotes = async (req, res) => {
     bracket.markModified('voteRounds');
     bracket.markModified('owner1Names');
     bracket.markModified('owner2Names');
+    bracket.markModified('hatedNamesBank');
     await bracket.save();
 
     return res.status(200).json({ bothSubmitted, outcomes, nextStatus });
