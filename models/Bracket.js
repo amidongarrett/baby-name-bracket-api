@@ -93,7 +93,7 @@ const BracketSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['draft', 'active', 'completed'],
+    enum: ['draft', 'voting', 'preview', 'active', 'completed'],
     default: 'draft'
   },
   owner1LockedIn: { type: Boolean, default: false },
@@ -215,7 +215,20 @@ const BracketSchema = new mongoose.Schema({
   guestUserIds: { type: [String], default: [] },
 
   // Rounds that have been scored via fanOutScores — used for idempotency guard
-  scoredRounds: { type: [String], default: [] }
+  scoredRounds: { type: [String], default: [] },
+
+  // Pre-tournament name-voting phase
+  voteRounds: [{
+    cycle:       { type: Number, required: true },
+    submittedBy: { type: [String], default: [] },
+    votes: [{
+      voterId:    { type: String, required: true },
+      nameId:     { type: String, required: true },
+      reaction:   { type: String, enum: ['love', 'like', 'hate'], required: true },
+      suggestion: { type: String, default: null }
+    }]
+  }],
+  previewConfirmedBy: { type: [String], default: [] }
 });
 
 // Pre-save hook to update the updatedAt timestamp

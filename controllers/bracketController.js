@@ -1600,9 +1600,9 @@ const lockInOwner = async (req, res) => {
 
     const bracket = await findBracket(bracketId);
 
-    if (bracket.status === 'active') {
+    if (bracket.status === 'active' || bracket.status === 'voting' || bracket.status === 'preview') {
       return res.status(400).json({
-        error: 'Bracket is already locked and active.',
+        error: 'Bracket names are already locked.',
         owner1LockedIn: bracket.owner1LockedIn,
         owner2LockedIn: bracket.owner2LockedIn,
         status: bracket.status
@@ -1616,19 +1616,11 @@ const lockInOwner = async (req, res) => {
       bracket.owner2LockedIn = true;
     }
 
-    // If both owners are locked in and there are exactly 32 names, activate the bracket
+    // If both owners are locked in and there are exactly 32 names, enter the voting phase
     const totalNames = bracket.getTotalNameCount();
     if (bracket.owner1LockedIn && bracket.owner2LockedIn && totalNames === 32) {
-      // Generate all round stubs upfront so future rounds are immediately visible
-      const allStubs = generateAllRoundStubs(bracket.owner1Names, bracket.owner2Names);
-      bracket.matchups.roundOf32    = allStubs.roundOf32;
-      bracket.matchups.roundOf16    = allStubs.roundOf16;
-      bracket.matchups.elite8       = allStubs.elite8;
-      bracket.matchups.final4       = allStubs.final4;
-      bracket.matchups.championship = allStubs.championship;
-
-      bracket.status = 'active';
-      bracket.currentRound = 'Round of 32';
+      bracket.status = 'voting';
+      bracket.voteRounds = [{ cycle: 1, submittedBy: [], votes: [] }];
     }
 
     await bracket.save();
@@ -2360,6 +2352,266 @@ const getUserBracket = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Pre-tournament name-voting helpers and controllers
+// ---------------------------------------------------------------------------
+
+/**
+ * Private helper: evaluate both owners' votes for a given cycle.
+ * Mutates bracket in-place (reorders names for loved reactions, sets status).
+ * Returns { hatedNames, suggestedNames, lovedNames, nextStatus }.
+ */
+function evaluateVotingOutcomes(bracket, cycle) {
+  const round = bracket.voteRounds.find(r => r.cycle === cycle);
+  if (!round) return { hatedNames: [], suggestedNames: [], lovedNames: [], nextStatus: 'voting' };
+
+  const hatedNames = [];
+  const suggestedNames = [];
+  const lovedNames = [];
+
+  // Each voter reacts to the OTHER owner's names
+  for (const vote of round.votes) {
+    const ownerOfName = vote.voterId === 'owner1' ? 'owner2' : 'owner1';
+    if (vote.reaction === 'hate') {
+      hatedNames.push({ nameId: vote.nameId, ownerId: ownerOfName });
+    } else if (vote.reaction === 'like' && vote.suggestion) {
+      suggestedNames.push({ nameId: vote.nameId, ownerId: ownerOfName, suggestion: vote.suggestion });
+    } else if (vote.reaction === 'love') {
+      lovedNames.push({ nameId: vote.nameId, ownerId: ownerOfName });
+    }
+  }
+
+  // Apply love-reordering: move loved names to the first non-shared position
+  for (const { nameId, ownerId } of lovedNames) {
+    const namesList = ownerId === 'owner1' ? bracket.owner1Names : bracket.owner2Names;
+    const idx = namesList.findIndex(n => n.id === nameId);
+    if (idx < 0) continue;
+    const [lovedName] = namesList.splice(idx, 1);
+    // First non-shared index
+    const insertAt = namesList.findIndex(n => !n.isShared);
+    if (insertAt < 0) {
+      namesList.unshift(lovedName);
+    } else {
+      namesList.splice(insertAt, 0, lovedName);
+    }
+  }
+
+  const nextStatus = (hatedNames.length === 0 && suggestedNames.length === 0) ? 'preview' : 'voting';
+
+  if (nextStatus === 'preview') {
+    bracket.status = 'preview';
+  } else {
+    // Create a new cycle with likes and loves pre-filled; hates are reset
+    const newCycle = cycle + 1;
+    const preFilled = round.votes
+      .filter(v => v.reaction !== 'hate')
+      .map(v => ({ voterId: v.voterId, nameId: v.nameId, reaction: v.reaction, suggestion: v.suggestion || null }));
+    bracket.voteRounds.push({ cycle: newCycle, submittedBy: [], votes: preFilled });
+  }
+
+  return { hatedNames, suggestedNames, lovedNames, nextStatus };
+}
+
+/**
+ * POST /api/bracket/votes/submit
+ * Submit one owner's vote reactions for the current voting cycle.
+ */
+const submitVotes = async (req, res) => {
+  try {
+    const { bracketId, ownerId, cycle, votes } = req.body;
+
+    if (!ownerId || !['owner1', 'owner2'].includes(ownerId)) {
+      return res.status(400).json({ error: 'Invalid ownerId. Must be "owner1" or "owner2".' });
+    }
+    if (!Array.isArray(votes)) {
+      return res.status(400).json({ error: 'votes must be an array.' });
+    }
+
+    const bracket = await findBracket(bracketId);
+
+    if (bracket.status !== 'voting') {
+      return res.status(400).json({ error: 'Bracket is not in the voting phase.' });
+    }
+
+    const targetCycle = cycle || (bracket.voteRounds.length > 0 ? bracket.voteRounds[bracket.voteRounds.length - 1].cycle : 1);
+    let round = bracket.voteRounds.find(r => r.cycle === targetCycle);
+    if (!round) {
+      bracket.voteRounds.push({ cycle: targetCycle, submittedBy: [], votes: [] });
+      round = bracket.voteRounds[bracket.voteRounds.length - 1];
+    }
+
+    // Replace any prior votes from this owner and add new ones
+    round.votes = round.votes.filter(v => v.voterId !== ownerId);
+    for (const v of votes) {
+      round.votes.push({
+        voterId: ownerId,
+        nameId: v.nameId,
+        reaction: v.reaction,
+        suggestion: v.suggestion || null,
+      });
+    }
+
+    // Deduped submittedBy
+    if (!round.submittedBy.includes(ownerId)) {
+      round.submittedBy.push(ownerId);
+    }
+
+    let bothSubmitted = false;
+    let outcomes = { hatedNames: [], suggestedNames: [], lovedNames: [] };
+    let nextStatus = 'voting';
+
+    if (round.submittedBy.includes('owner1') && round.submittedBy.includes('owner2')) {
+      bothSubmitted = true;
+      const result = evaluateVotingOutcomes(bracket, targetCycle);
+      outcomes = { hatedNames: result.hatedNames, suggestedNames: result.suggestedNames, lovedNames: result.lovedNames };
+      nextStatus = result.nextStatus;
+    }
+
+    bracket.markModified('voteRounds');
+    bracket.markModified('owner1Names');
+    bracket.markModified('owner2Names');
+    await bracket.save();
+
+    return res.status(200).json({ bothSubmitted, outcomes, nextStatus });
+  } catch (error) {
+    console.error('Error in submitVotes:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * GET /api/bracket/votes?bracketId=<id>
+ * Returns all vote round records for the bracket.
+ */
+const getVotes = async (req, res) => {
+  try {
+    const bracketId = req.query.bracketId;
+    const bracket = await findBracket(bracketId);
+    return res.status(200).json({ cycles: bracket.voteRounds || [] });
+  } catch (error) {
+    console.error('Error in getVotes:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/votes/resolve-name
+ * Owner resolves a hated or suggested name.
+ */
+const resolveName = async (req, res) => {
+  try {
+    const { bracketId, nameId, action, replacementName } = req.body;
+
+    if (!['drop', 'keep', 'replace'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Must be "drop", "keep", or "replace".' });
+    }
+
+    const bracket = await findBracket(bracketId);
+
+    // Find which owner's list contains this name
+    let ownerKey = null;
+    let nameIdx = bracket.owner1Names.findIndex(n => n.id === nameId);
+    if (nameIdx >= 0) {
+      ownerKey = 'owner1Names';
+    } else {
+      nameIdx = bracket.owner2Names.findIndex(n => n.id === nameId);
+      if (nameIdx >= 0) ownerKey = 'owner2Names';
+    }
+
+    if (!ownerKey) {
+      return res.status(404).json({ error: 'Name not found in any owner list.' });
+    }
+
+    if (action === 'drop') {
+      bracket[ownerKey].splice(nameIdx, 1);
+    } else if (action === 'keep') {
+      // Clear any pending suggestion on the latest vote round
+      const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
+      if (latestRound) {
+        const vote = latestRound.votes.find(v => v.nameId === nameId);
+        if (vote) vote.suggestion = null;
+      }
+    } else if (action === 'replace') {
+      if (!replacementName) {
+        return res.status(400).json({ error: 'replacementName is required for action "replace".' });
+      }
+      bracket[ownerKey][nameIdx].value = replacementName.trim();
+      // Clear hate status in the latest round
+      const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
+      if (latestRound) {
+        latestRound.votes = latestRound.votes.filter(v => !(v.nameId === nameId && v.reaction === 'hate'));
+      }
+    }
+
+    // Check if all hated/suggested names across the latest cycle are resolved
+    const latestRound = bracket.voteRounds[bracket.voteRounds.length - 1];
+    let nextStatus = 'voting';
+    if (latestRound) {
+      const remainingHated = latestRound.votes.filter(v => v.reaction === 'hate').length;
+      const remainingSuggested = latestRound.votes.filter(v => v.reaction === 'like' && v.suggestion).length;
+      if (remainingHated === 0 && remainingSuggested === 0) {
+        bracket.status = 'preview';
+        nextStatus = 'preview';
+      }
+    }
+
+    bracket.markModified('voteRounds');
+    bracket.markModified('owner1Names');
+    bracket.markModified('owner2Names');
+    await bracket.save();
+
+    return res.status(200).json({ nextStatus });
+  } catch (error) {
+    console.error('Error in resolveName:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
+/**
+ * POST /api/bracket/confirm-preview
+ * Owner confirms the pre-tournament preview; when both confirm, generates matchup stubs and activates bracket.
+ */
+const confirmPreview = async (req, res) => {
+  try {
+    const { bracketId, ownerId } = req.body;
+
+    if (!ownerId || !['owner1', 'owner2'].includes(ownerId)) {
+      return res.status(400).json({ error: 'Invalid ownerId. Must be "owner1" or "owner2".' });
+    }
+
+    const bracket = await findBracket(bracketId);
+
+    if (bracket.status !== 'preview') {
+      return res.status(400).json({ error: 'Bracket is not in the preview phase.' });
+    }
+
+    if (!bracket.previewConfirmedBy.includes(ownerId)) {
+      bracket.previewConfirmedBy.push(ownerId);
+    }
+
+    if (bracket.previewConfirmedBy.includes('owner1') && bracket.previewConfirmedBy.includes('owner2')) {
+      // Both confirmed — generate matchup stubs and activate the bracket
+      const allStubs = generateAllRoundStubs(bracket.owner1Names, bracket.owner2Names);
+      bracket.matchups.roundOf32    = allStubs.roundOf32;
+      bracket.matchups.roundOf16    = allStubs.roundOf16;
+      bracket.matchups.elite8       = allStubs.elite8;
+      bracket.matchups.final4       = allStubs.final4;
+      bracket.matchups.championship = allStubs.championship;
+      bracket.status = 'active';
+      bracket.currentRound = 'Round of 32';
+    }
+
+    await bracket.save();
+
+    return res.status(200).json({
+      status: bracket.status === 'active' ? 'active' : 'waiting_for_partner'
+    });
+  } catch (error) {
+    console.error('Error in confirmPreview:', error);
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+};
+
 module.exports = {
   addName,
   reorderNames,
@@ -2397,5 +2649,9 @@ module.exports = {
   getVoteTallies,
   getScores,
   saveTiebreakerPrediction,
-  getUserBracket
+  getUserBracket,
+  submitVotes,
+  getVotes,
+  resolveName,
+  confirmPreview
 };

@@ -42,7 +42,11 @@ const {
   getVoteTallies,
   getScores,
   saveTiebreakerPrediction,
-  getUserBracket
+  getUserBracket,
+  submitVotes,
+  getVotes,
+  resolveName,
+  confirmPreview
 } = require('../controllers/bracketController');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 
@@ -135,6 +139,12 @@ router.post('/bracket/:id/join-share',            requireAuth, joinViaShareToken
  * Requires auth so only the owning parent can reorder.
  */
 router.patch('/brackets/:id/names/reorder', requireAuth, reorderNames);
+
+// Pre-tournament name-voting routes — must appear before the wildcard /:sessionId GET
+router.post('/bracket/votes/submit',       requireAuth, submitVotes);
+router.get('/bracket/votes',               requireAuth, getVotes);
+router.post('/bracket/votes/resolve-name', requireAuth, resolveName);
+router.post('/bracket/confirm-preview',    requireAuth, confirmPreview);
 
 /**
  * GET /api/bracket/:sessionId
